@@ -41,6 +41,7 @@ const WHEEL_PIXELS_PER_DETENT: i32 = 240;
 const INPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 const DROP_STRIP_WIDTH: i32 = 18;
 const DROP_STRIP_ALPHA: u8 = 48;
+const RECENTER_MARGIN: i32 = 96;
 
 static CAPTURE_STATE: OnceLock<Arc<Mutex<CaptureState>>> = OnceLock::new();
 static TRANSFER_WRITER: OnceLock<SharedWriter> = OnceLock::new();
@@ -407,6 +408,7 @@ struct CaptureState {
     win_size: (i32, i32),
     remote_size: (i32, i32),
     remote_pos: (i32, i32),
+    local_pos: (i32, i32),
     active: bool,
     warping: bool,
     local_left_down: bool,
@@ -421,6 +423,7 @@ impl CaptureState {
             win_size: screen_size(),
             remote_size,
             remote_pos: (0, 0),
+            local_pos: (0, 0),
             active: false,
             warping: false,
             local_left_down: false,
@@ -490,11 +493,13 @@ impl CaptureState {
         if self.active {
             if self.warping || (hook.flags & LLMHF_INJECTED) != 0 {
                 self.warping = false;
+                self.local_pos = self.anchor();
                 return true;
             }
-            let anchor = self.anchor();
-            let dx = hook.pt.x - anchor.0;
-            let dy = hook.pt.y - anchor.1;
+            let current = (hook.pt.x, hook.pt.y);
+            let dx = current.0 - self.local_pos.0;
+            let dy = current.1 - self.local_pos.1;
+            self.local_pos = current;
             if dx == 0 && dy == 0 {
                 return true;
             }
@@ -510,7 +515,9 @@ impl CaptureState {
                 x: self.remote_pos.0,
                 y: self.remote_pos.1,
             });
-            self.warp_to_anchor();
+            if self.should_recenter_local_cursor(current) {
+                self.warp_to_anchor();
+            }
             return true;
         }
 
@@ -581,8 +588,16 @@ impl CaptureState {
         (self.win_size.0 / 2, self.win_size.1 / 2)
     }
 
+    fn should_recenter_local_cursor(&self, point: (i32, i32)) -> bool {
+        point.0 <= RECENTER_MARGIN
+            || point.1 <= RECENTER_MARGIN
+            || point.0 >= self.win_size.0.saturating_sub(RECENTER_MARGIN)
+            || point.1 >= self.win_size.1.saturating_sub(RECENTER_MARGIN)
+    }
+
     fn warp_to_anchor(&mut self) {
         let anchor = self.anchor();
+        self.local_pos = anchor;
         self.warping = true;
         unsafe {
             SetCursorPos(anchor.0, anchor.1);

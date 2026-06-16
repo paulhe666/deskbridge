@@ -34,12 +34,13 @@ impl ClipboardApi for Clipboard {
 }
 
 fn read_text() -> std::io::Result<Option<String>> {
-    let output = Command::new("pbpaste").output()?;
+    let output = Command::new("pbpaste").args(["-Prefer", "txt"]).output()?;
     if !output.status.success() || output.stdout.is_empty() {
         return Ok(None);
     }
-    let text = String::from_utf8(output.stdout)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let Ok(text) = String::from_utf8(output.stdout) else {
+        return Ok(None);
+    };
     Ok(Some(text.replace("\r\n", "\n").replace('\r', "\n")))
 }
 
@@ -50,17 +51,40 @@ fn write_text(text: &str) -> std::io::Result<()> {
 fn read_bitmap() -> std::io::Result<Option<Vec<u8>>> {
     let script = r#"ObjC.import("AppKit");
 ObjC.import("Foundation");
-function exists(value) { return value && !(value.isNil && value.isNil()); }
+function exists(value) { return value !== undefined && value !== null && !(value.isNil && value.isNil()); }
+function bmpDataFromImageData(data) {
+  if (!exists(data)) return null;
+  const image = $.NSImage.alloc.initWithData(data);
+  if (!exists(image) || !image.isValid) return null;
+  const tiff = image.TIFFRepresentation;
+  if (!exists(tiff)) return null;
+  const rep = $.NSBitmapImageRep.imageRepWithData(tiff);
+  if (!exists(rep)) return null;
+  return rep.representationUsingTypeProperties(1, $({}));
+}
 const pasteboard = $.NSPasteboard.generalPasteboard;
-let data = pasteboard.dataForType("com.microsoft.bmp");
-if (!exists(data)) {
+let out = null;
+for (const type of ["com.microsoft.bmp", "public.bmp", "com.apple.pict"]) {
+  const data = pasteboard.dataForType(type);
+  if (exists(data)) {
+    out = data;
+    break;
+  }
+}
+if (!exists(out)) {
+  for (const type of ["public.png", "public.tiff", "public.jpeg", "public.heic"]) {
+    out = bmpDataFromImageData(pasteboard.dataForType(type));
+    if (exists(out)) break;
+  }
+}
+if (!exists(out)) {
   const image = $.NSImage.alloc.initWithPasteboard(pasteboard);
   if (exists(image) && image.isValid) {
     const rep = $.NSBitmapImageRep.imageRepWithData(image.TIFFRepresentation);
-    if (exists(rep)) data = rep.representationUsingTypeProperties($.NSBMPFileType, $({}));
+    if (exists(rep)) out = rep.representationUsingTypeProperties(1, $({}));
   }
 }
-if (exists(data)) $.NSFileHandle.fileHandleWithStandardOutput.writeData(data);
+if (exists(out)) $.NSFileHandle.fileHandleWithStandardOutput.writeData(out);
 "#;
     let output = Command::new("osascript")
         .args(["-l", "JavaScript", "-e", script])
@@ -91,7 +115,7 @@ const urls = pasteboard.readObjectsForClassesOptions($[$.NSURL.class], $({}));
 if (urls) {
   for (let i = 0; i < urls.count; i++) {
     const path = urls.objectAtIndex(i).path;
-    if (path) $.puts(ObjC.unwrap(path));
+    if (path) console.log(ObjC.unwrap(path));
   }
 }
 "#;

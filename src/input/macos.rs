@@ -24,6 +24,8 @@ const RIGHT_SHIFT_KEYCODE: u16 = 60;
 const SPACE_KEYCODE: u16 = 49;
 const NUMBER_4_KEYCODE: u16 = 21;
 const PRINT_SCREEN_SCANCODE: u16 = 311;
+const LEFT_SHIFT_SCANCODE: u16 = 42;
+const RIGHT_SHIFT_SCANCODE: u16 = 54;
 const DEFAULT_SCROLL_FRAME_MS: u64 = 8;
 const DEFAULT_SCROLL_SCALE: f64 = 1.25;
 const DEFAULT_SCROLL_RESPONSE: f64 = 0.34;
@@ -35,6 +37,7 @@ pub struct InputSink {
     pressed_keys: HashSet<u16>,
     mouse_position: CGPoint,
     scroll: SmoothScroller,
+    shift_tap_candidate: Option<u16>,
 }
 
 impl InputSink {
@@ -46,6 +49,7 @@ impl InputSink {
             pressed_keys: HashSet::new(),
             mouse_position: CGPoint::new(0.0, 0.0),
             scroll: SmoothScroller::spawn(),
+            shift_tap_candidate: None,
         })
     }
 
@@ -69,6 +73,7 @@ impl InputSink {
             return Ok(());
         }
 
+        self.update_shift_tap_state(scancode, state);
         let Some(keycode) = scancode_to_macos_key(scancode) else {
             return Ok(());
         };
@@ -81,6 +86,10 @@ impl InputSink {
             KeyState::Up => {
                 self.pressed_keys.remove(&keycode);
                 self.post_key(keycode, false)?;
+                if is_shift_scancode(scancode) && self.shift_tap_candidate == Some(scancode) {
+                    self.shift_tap_candidate = None;
+                    self.toggle_input_source()?;
+                }
             }
             KeyState::Repeat => {
                 if self.pressed_keys.contains(&keycode) {
@@ -92,6 +101,18 @@ impl InputSink {
             }
         }
         Ok(())
+    }
+
+    fn update_shift_tap_state(&mut self, scancode: u16, state: KeyState) {
+        if is_shift_scancode(scancode) {
+            if state == KeyState::Down {
+                self.shift_tap_candidate = Some(scancode);
+            }
+            return;
+        }
+        if matches!(state, KeyState::Down | KeyState::Repeat) {
+            self.shift_tap_candidate = None;
+        }
     }
 
     fn screenshot_hotkey(&self) -> std::io::Result<()> {
@@ -107,6 +128,13 @@ impl InputSink {
         self.post_key_with_flags(CONTROL_KEYCODE, false, command)?;
         self.post_key_with_flags(COMMAND_KEYCODE, false, CGEventFlags::empty())?;
         Ok(())
+    }
+
+    fn toggle_input_source(&self) -> std::io::Result<()> {
+        self.post_key_with_flags(CONTROL_KEYCODE, true, CGEventFlags::CGEventFlagControl)?;
+        self.post_key_with_flags(SPACE_KEYCODE, true, CGEventFlags::CGEventFlagControl)?;
+        self.post_key_with_flags(SPACE_KEYCODE, false, CGEventFlags::CGEventFlagControl)?;
+        self.post_key_with_flags(CONTROL_KEYCODE, false, CGEventFlags::empty())
     }
 
     fn post_key(&self, keycode: u16, down: bool) -> std::io::Result<()> {
@@ -398,6 +426,10 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(default)
+}
+
+fn is_shift_scancode(scancode: u16) -> bool {
+    matches!(scancode, LEFT_SHIFT_SCANCODE | RIGHT_SHIFT_SCANCODE)
 }
 
 fn scancode_to_macos_key(scancode: u16) -> Option<u16> {
