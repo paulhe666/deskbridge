@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::mem::zeroed;
+use std::mem::{size_of, zeroed};
 use std::net::{TcpListener, TcpStream};
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -14,17 +14,21 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SCROLL;
+use windows_sys::Win32::UI::Input::{
+    GetRawInputData, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER,
+    RID_INPUT, RIDEV_INPUTSINK, RIM_TYPEMOUSE, RegisterRawInputDevices,
+};
 use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetSystemMetrics, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP, LLMHF_INJECTED,
     LWA_ALPHA, MSG, MSLLHOOKSTRUCT, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNA,
     SetCursorPos, SetLayeredWindowAttributes, SetProcessDPIAware, SetWindowsHookExW, ShowWindow,
-    TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_DROPFILES, WM_KEYDOWN,
-    WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
-    WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_EX_ACCEPTFILES, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, XBUTTON1, XBUTTON2,
+    TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_DROPFILES, WM_INPUT,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_EX_ACCEPTFILES, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, XBUTTON1, XBUTTON2,
 };
 
 use super::{Edge, ServerConfig};
@@ -104,6 +108,8 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
         eprintln!("file drop strip disabled; use the GUI drop zone for file drag transfer");
         None
     };
+    let raw_input = RawInputWindow::create()?;
+    eprintln!("raw mouse input registered for relative movement");
     let hooks = Hooks::install()?;
     eprintln!("input hooks installed; move the mouse through the configured edge to control macOS");
     if drop_strip.is_some() {
@@ -111,6 +117,7 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
     }
     message_loop();
     drop(hooks);
+    drop(raw_input);
     drop(drop_strip);
     Ok(())
 }
@@ -275,6 +282,78 @@ impl Drop for Hooks {
     }
 }
 
+struct RawInputWindow {
+    hwnd: HWND,
+}
+
+impl RawInputWindow {
+    fn create() -> std::io::Result<Self> {
+        let class_name = wide_null("DeskbridgeRawInput");
+        let title = wide_null("Deskbridge Raw Input");
+        let module = unsafe { GetModuleHandleW(ptr::null()) };
+        let wnd_class = WNDCLASSW {
+            style: 0,
+            lpfnWndProc: Some(raw_input_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: module,
+            hIcon: ptr::null_mut(),
+            hCursor: ptr::null_mut(),
+            hbrBackground: ptr::null_mut(),
+            lpszMenuName: ptr::null(),
+            lpszClassName: class_name.as_ptr(),
+        };
+        unsafe {
+            RegisterClassW(&wnd_class);
+        }
+
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                WS_POPUP,
+                0,
+                0,
+                0,
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                module,
+                ptr::null(),
+            )
+        };
+        if hwnd.is_null() {
+            return Err(last_os_error("CreateWindowExW raw input failed"));
+        }
+
+        let device = RAWINPUTDEVICE {
+            usUsagePage: 0x01,
+            usUsage: 0x02,
+            dwFlags: RIDEV_INPUTSINK,
+            hwndTarget: hwnd,
+        };
+        let ok = unsafe {
+            RegisterRawInputDevices(&device, 1, size_of::<RAWINPUTDEVICE>().try_into().unwrap())
+        };
+        if ok == 0 {
+            unsafe {
+                DestroyWindow(hwnd);
+            }
+            return Err(last_os_error("RegisterRawInputDevices mouse failed"));
+        }
+        Ok(Self { hwnd })
+    }
+}
+
+impl Drop for RawInputWindow {
+    fn drop(&mut self) {
+        unsafe {
+            DestroyWindow(self.hwnd);
+        }
+    }
+}
+
 struct DropStrip {
     hwnd: HWND,
 }
@@ -374,6 +453,69 @@ unsafe extern "system" fn drop_strip_proc(
         return 0;
     }
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+unsafe extern "system" fn raw_input_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_INPUT {
+        handle_raw_mouse_input(lparam);
+        return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
+    }
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+fn handle_raw_mouse_input(lparam: LPARAM) {
+    let mut size = 0u32;
+    let header_size = size_of::<RAWINPUTHEADER>() as u32;
+    let query = unsafe {
+        GetRawInputData(
+            lparam as HRAWINPUT,
+            RID_INPUT,
+            ptr::null_mut(),
+            &mut size,
+            header_size,
+        )
+    };
+    if query == u32::MAX || size == 0 {
+        return;
+    }
+
+    let mut buffer = vec![0u8; size as usize];
+    let read = unsafe {
+        GetRawInputData(
+            lparam as HRAWINPUT,
+            RID_INPUT,
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            header_size,
+        )
+    };
+    if read == u32::MAX || read != size {
+        return;
+    }
+
+    let raw = unsafe { &*(buffer.as_ptr() as *const RAWINPUT) };
+    if raw.header.dwType != RIM_TYPEMOUSE {
+        return;
+    }
+    let mouse = unsafe { raw.data.mouse };
+    if mouse.usFlags & MOUSE_MOVE_ABSOLUTE != 0 {
+        return;
+    }
+    if mouse.lLastX == 0 && mouse.lLastY == 0 {
+        return;
+    }
+
+    if let Some(state) = CAPTURE_STATE.get() {
+        state
+            .lock()
+            .unwrap()
+            .handle_raw_mouse_delta(mouse.lLastX, mouse.lLastY);
+    }
 }
 
 fn dropped_files_from_hdrop(hdrop: HDROP) -> Vec<PathBuf> {
@@ -504,25 +646,10 @@ impl CaptureState {
                 self.local_pos = self.anchor();
                 return true;
             }
-            let current = (hook.pt.x, hook.pt.y);
-            let dx = current.0 - self.local_pos.0;
-            let dy = current.1 - self.local_pos.1;
-            self.local_pos = current;
-            if dx == 0 && dy == 0 {
-                return false;
-            }
-
-            self.remote_pos.0 = clamp(self.remote_pos.0 + dx, 0, self.remote_size.0 - 1);
-            self.remote_pos.1 = clamp(self.remote_pos.1 + dy, 0, self.remote_size.1 - 1);
-            self.send_input(InputEvent::MouseMove {
-                x: self.remote_pos.0,
-                y: self.remote_pos.1,
-            });
-            if self.should_recenter_local_cursor(current) {
+            if self.should_recenter_local_cursor((hook.pt.x, hook.pt.y)) {
                 self.warp_to_anchor();
-                return true;
             }
-            return false;
+            return true;
         }
 
         self.win_size = screen_size();
@@ -534,6 +661,18 @@ impl CaptureState {
             return true;
         }
         false
+    }
+
+    fn handle_raw_mouse_delta(&mut self, dx: i32, dy: i32) {
+        if !self.active {
+            return;
+        }
+        self.remote_pos.0 = clamp(self.remote_pos.0 + dx, 0, self.remote_size.0 - 1);
+        self.remote_pos.1 = clamp(self.remote_pos.1 + dy, 0, self.remote_size.1 - 1);
+        self.send_input(InputEvent::MouseMove {
+            x: self.remote_pos.0,
+            y: self.remote_pos.1,
+        });
     }
 
     fn activate(&mut self, local_y: i32) {
