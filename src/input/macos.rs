@@ -3,6 +3,7 @@ use std::io::ErrorKind;
 use std::thread;
 use std::time::Duration;
 
+use core_graphics::display::CGDisplay;
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventTapLocation, CGMouseButton, ScrollEventUnit,
 };
@@ -20,6 +21,7 @@ const LEFT_SHIFT_KEYCODE: u16 = 56;
 const RIGHT_SHIFT_KEYCODE: u16 = 60;
 const SPACE_KEYCODE: u16 = 49;
 const NUMBER_4_KEYCODE: u16 = 21;
+const PRINT_SCREEN_SCANCODE: u16 = 311;
 const REPEAT_DELAY: Duration = Duration::from_millis(28);
 
 pub struct InputSink {
@@ -52,6 +54,13 @@ impl InputSink {
     }
 
     fn key(&mut self, scancode: u16, state: KeyState) -> std::io::Result<()> {
+        if scancode == PRINT_SCREEN_SCANCODE {
+            if state == KeyState::Down {
+                self.screenshot_hotkey()?;
+            }
+            return Ok(());
+        }
+
         let Some(keycode) = scancode_to_macos_key(scancode) else {
             return Ok(());
         };
@@ -76,10 +85,34 @@ impl InputSink {
         Ok(())
     }
 
+    fn screenshot_hotkey(&self) -> std::io::Result<()> {
+        let command = CGEventFlags::CGEventFlagCommand;
+        let command_control = CGEventFlags::CGEventFlagCommand | CGEventFlags::CGEventFlagControl;
+        let full_flags = command_control | CGEventFlags::CGEventFlagShift;
+        self.post_key_with_flags(COMMAND_KEYCODE, true, command)?;
+        self.post_key_with_flags(CONTROL_KEYCODE, true, command_control)?;
+        self.post_key_with_flags(LEFT_SHIFT_KEYCODE, true, full_flags)?;
+        self.post_key_with_flags(NUMBER_4_KEYCODE, true, full_flags)?;
+        self.post_key_with_flags(NUMBER_4_KEYCODE, false, full_flags)?;
+        self.post_key_with_flags(LEFT_SHIFT_KEYCODE, false, command_control)?;
+        self.post_key_with_flags(CONTROL_KEYCODE, false, command)?;
+        self.post_key_with_flags(COMMAND_KEYCODE, false, CGEventFlags::empty())?;
+        Ok(())
+    }
+
     fn post_key(&self, keycode: u16, down: bool) -> std::io::Result<()> {
+        self.post_key_with_flags(keycode, down, flags_for_pressed_keys(&self.pressed_keys))
+    }
+
+    fn post_key_with_flags(
+        &self,
+        keycode: u16,
+        down: bool,
+        flags: CGEventFlags,
+    ) -> std::io::Result<()> {
         let event = CGEvent::new_keyboard_event(self.source.clone(), keycode, down)
             .map_err(|_| event_err("failed to create key event"))?;
-        event.set_flags(flags_for_pressed_keys(&self.pressed_keys));
+        event.set_flags(flags);
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -251,4 +284,9 @@ fn flags_for_pressed_keys(keys: &HashSet<u16>) -> CGEventFlags {
 
 fn event_err(message: &str) -> std::io::Error {
     std::io::Error::new(ErrorKind::Other, message)
+}
+
+pub fn screen_size() -> (u32, u32) {
+    let display = CGDisplay::main();
+    (display.pixels_wide() as u32, display.pixels_high() as u32)
 }

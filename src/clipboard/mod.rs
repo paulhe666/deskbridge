@@ -2,7 +2,7 @@ use crate::protocol::ClipboardPayload;
 
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 mod unsupported;
 #[cfg(windows)]
 mod windows;

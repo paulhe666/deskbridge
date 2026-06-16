@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -42,6 +43,64 @@ pub fn send_files(writer: &SharedWriter, files: &[PathBuf]) -> std::io::Result<(
 pub struct ReceiveFile {
     file: File,
     remaining: u64,
+}
+
+pub struct IncomingBundle {
+    root: PathBuf,
+    current: Option<ReceiveFile>,
+    received_roots: BTreeSet<PathBuf>,
+    active: bool,
+}
+
+impl IncomingBundle {
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            current: None,
+            received_roots: BTreeSet::new(),
+            active: false,
+        }
+    }
+
+    pub fn start_file(&mut self, relative: &str, len: u64) -> std::io::Result<()> {
+        if !self.active {
+            self.reset_root()?;
+            self.active = true;
+        }
+        if let Some(top) = top_level_path(relative)? {
+            self.received_roots.insert(self.root.join(top));
+        }
+        self.current = Some(start_receive(&self.root, relative, len)?);
+        Ok(())
+    }
+
+    pub fn write_chunk(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        if let Some(file) = self.current.as_mut() {
+            if file.write_chunk(chunk)? {
+                self.current = None;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> Vec<PathBuf> {
+        self.current = None;
+        self.active = false;
+        if self.received_roots.is_empty() {
+            vec![self.root.clone()]
+        } else {
+            self.received_roots.iter().cloned().collect()
+        }
+    }
+
+    fn reset_root(&mut self) -> std::io::Result<()> {
+        self.current = None;
+        self.received_roots.clear();
+        if self.root.exists() {
+            fs::remove_dir_all(&self.root)?;
+        }
+        fs::create_dir_all(&self.root)
+    }
 }
 
 pub fn start_receive(root: &Path, relative: &str, len: u64) -> std::io::Result<ReceiveFile> {
@@ -124,6 +183,17 @@ fn safe_relative_path(value: &str) -> std::io::Result<PathBuf> {
         ));
     }
     Ok(path.to_path_buf())
+}
+
+fn top_level_path(value: &str) -> std::io::Result<Option<PathBuf>> {
+    let path = safe_relative_path(value)?;
+    Ok(path.components().next().and_then(|component| {
+        if let Component::Normal(part) = component {
+            Some(PathBuf::from(part))
+        } else {
+            None
+        }
+    }))
 }
 
 fn relative_to_string(path: &Path) -> std::io::Result<String> {

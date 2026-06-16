@@ -1,25 +1,30 @@
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use crate::clipboard::{Clipboard, ClipboardApi};
 use crate::file_transfer;
 use crate::input::InputSink;
-use crate::protocol::{self, FrameKind};
+use crate::protocol::{self, ClipboardPayload, Frame, FrameKind};
 use crate::transport::SharedWriter;
 
 pub fn run(server: &str) -> std::io::Result<()> {
     let mut stream = TcpStream::connect(server)?;
     stream.set_nodelay(true)?;
     let writer = SharedWriter::new(stream.try_clone()?);
+    let (width, height) = crate::input::screen_size();
     writer.write(crate::protocol::Frame::new(
         FrameKind::Hello,
-        protocol::hello_payload(),
+        protocol::hello_payload_with_screen(width, height),
     ))?;
 
     let mut input = InputSink::new()?;
     let mut clipboard = Clipboard::new()?;
     let receive_root = std::env::temp_dir().join("deskbridge-received");
-    let mut receiving_file = None;
+    let mut incoming_files = file_transfer::IncomingBundle::new(receive_root);
+    let last_clipboard = Arc::new(Mutex::new(None));
+    spawn_clipboard_watcher(writer.clone(), Arc::clone(&last_clipboard));
 
     loop {
         let frame = protocol::read_frame(&mut stream)?;
@@ -27,24 +32,77 @@ pub fn run(server: &str) -> std::io::Result<()> {
             FrameKind::Input => input.apply(protocol::decode_input(&frame.payload)?)?,
             FrameKind::Clipboard => {
                 let payload = protocol::decode_clipboard(&frame.payload)?;
+                remember_clipboard(&last_clipboard, &payload);
                 clipboard.write(&payload)?;
             }
             FrameKind::FileStart => {
                 let (relative, len) = protocol::decode_file_start(&frame.payload)?;
-                receiving_file = Some(file_transfer::start_receive(&receive_root, &relative, len)?);
+                incoming_files.start_file(&relative, len)?;
             }
             FrameKind::FileChunk => {
-                if let Some(file) = receiving_file.as_mut() {
-                    if file.write_chunk(&frame.payload)? {
-                        receiving_file = None;
-                    }
-                }
+                incoming_files.write_chunk(&frame.payload)?;
             }
             FrameKind::DragEnd => {
-                let files = vec![PathBuf::from(&receive_root)];
-                clipboard.write(&crate::protocol::ClipboardPayload::Files(files))?;
+                let files = incoming_files.finish();
+                let payload = ClipboardPayload::Files(files);
+                remember_clipboard(&last_clipboard, &payload);
+                clipboard.write(&payload)?;
             }
             _ => {}
         }
     }
+}
+
+fn spawn_clipboard_watcher(writer: SharedWriter, last_clipboard: Arc<Mutex<Option<Vec<u8>>>>) {
+    thread::spawn(move || {
+        let mut clipboard = match Clipboard::new() {
+            Ok(clipboard) => clipboard,
+            Err(e) => {
+                eprintln!("clipboard watcher disabled: {e}");
+                return;
+            }
+        };
+        loop {
+            thread::sleep(Duration::from_millis(450));
+            let payload = match clipboard.read() {
+                Ok(Some(payload)) => payload,
+                Ok(None) => continue,
+                Err(e) => {
+                    eprintln!("clipboard read failed: {e}");
+                    continue;
+                }
+            };
+            let encoded = protocol::encode_clipboard(&payload);
+            {
+                let mut last = last_clipboard.lock().unwrap();
+                if last.as_ref() == Some(&encoded) {
+                    continue;
+                }
+                *last = Some(encoded);
+            }
+            if let Err(e) = send_clipboard_payload(&writer, &payload) {
+                eprintln!("clipboard send failed: {e}");
+            }
+        }
+    });
+}
+
+fn send_clipboard_payload(
+    writer: &SharedWriter,
+    payload: &ClipboardPayload,
+) -> std::io::Result<()> {
+    match payload {
+        ClipboardPayload::Files(files) => {
+            file_transfer::send_files(writer, files)?;
+            writer.write(Frame::new(FrameKind::DragEnd, Vec::new()))
+        }
+        _ => writer.write(Frame::new(
+            FrameKind::Clipboard,
+            protocol::encode_clipboard(payload),
+        )),
+    }
+}
+
+fn remember_clipboard(last_clipboard: &Arc<Mutex<Option<Vec<u8>>>>, payload: &ClipboardPayload) {
+    *last_clipboard.lock().unwrap() = Some(protocol::encode_clipboard(payload));
 }

@@ -79,6 +79,13 @@ pub enum InputEvent {
     MouseWheel { horizontal: i16, vertical: i16 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hello {
+    pub version: u16,
+    pub screen_width: Option<u32>,
+    pub screen_height: Option<u32>,
+}
+
 pub fn read_frame(reader: &mut impl Read) -> std::io::Result<Frame> {
     let mut kind = [0u8; 1];
     reader.read_exact(&mut kind)?;
@@ -99,6 +106,33 @@ pub fn write_frame(writer: &mut impl Write, frame: &Frame) -> std::io::Result<()
 
 pub fn hello_payload() -> Vec<u8> {
     VERSION.to_be_bytes().to_vec()
+}
+
+pub fn hello_payload_with_screen(width: u32, height: u32) -> Vec<u8> {
+    let mut out = hello_payload();
+    out.extend_from_slice(&width.to_be_bytes());
+    out.extend_from_slice(&height.to_be_bytes());
+    out
+}
+
+pub fn decode_hello(payload: &[u8]) -> std::io::Result<Hello> {
+    if payload.len() < 2 {
+        return Err(invalid("short hello payload"));
+    }
+    let version = u16::from_be_bytes([payload[0], payload[1]]);
+    let (screen_width, screen_height) = if payload.len() >= 10 {
+        (
+            Some(u32::from_be_bytes(payload[2..6].try_into().unwrap())),
+            Some(u32::from_be_bytes(payload[6..10].try_into().unwrap())),
+        )
+    } else {
+        (None, None)
+    };
+    Ok(Hello {
+        version,
+        screen_width,
+        screen_height,
+    })
 }
 
 pub fn encode_input(event: &InputEvent) -> Vec<u8> {

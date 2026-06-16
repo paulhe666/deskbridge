@@ -1,26 +1,31 @@
-use std::net::TcpListener;
+#[cfg(not(windows))]
+mod unsupported;
+#[cfg(windows)]
+mod windows;
 
-use crate::protocol::{self, Frame, FrameKind};
+#[cfg(not(windows))]
+pub use unsupported::run;
+#[cfg(windows)]
+pub use windows::run;
 
-pub fn run(bind: &str) -> std::io::Result<()> {
-    let listener = TcpListener::bind(bind)?;
-    eprintln!("deskbridge server listening on {bind}");
-    let (mut stream, addr) = listener.accept()?;
-    eprintln!("client connected from {addr}");
-    protocol::write_frame(
-        &mut stream,
-        &Frame::new(FrameKind::Hello, protocol::hello_payload()),
-    )?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Left,
+    Right,
+}
 
-    // Windows server work lands here:
-    // 1. global mouse/keyboard hooks
-    // 2. edge detection and cursor lock/release
-    // 3. clipboard watcher for text / CF_DIB / CF_HDROP
-    // 4. file drag source and file transfer stream
-    loop {
-        let frame = protocol::read_frame(&mut stream)?;
-        if frame.kind == FrameKind::Hello {
-            eprintln!("protocol hello received");
+impl Edge {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            _ => Err("edge must be left or right".to_string()),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerConfig {
+    pub bind: String,
+    pub edge: Edge,
 }

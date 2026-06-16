@@ -14,3 +14,7 @@ impl InputSink {
         Ok(())
     }
 }
+
+pub fn screen_size() -> (u32, u32) {
+    (0, 0)
+}

@@ -13,7 +13,7 @@ use std::process::ExitCode;
 
 #[derive(Debug)]
 enum Command {
-    Server { bind: String },
+    Server { bind: String, edge: server::Edge },
     Client { server: String },
 }
 
@@ -37,7 +37,7 @@ fn main() -> ExitCode {
     };
 
     let result = match command {
-        Command::Server { bind } => server::run(&bind),
+        Command::Server { bind, edge } => server::run(server::ServerConfig { bind, edge }),
         Command::Client { server } => client::run(&server),
     };
     if let Err(e) = result {
@@ -51,7 +51,11 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
     match args.first().map(String::as_str) {
         Some("server") => {
             let bind = value_after(args, "--bind").unwrap_or_else(|| "0.0.0.0:24920".to_string());
-            Ok(Command::Server { bind })
+            let edge = value_after(args, "--edge")
+                .map(|value| server::Edge::parse(&value))
+                .transpose()?
+                .unwrap_or(server::Edge::Right);
+            Ok(Command::Server { bind, edge })
         }
         Some("client") => {
             let server = value_after(args, "--server")
@@ -72,10 +76,11 @@ fn print_usage() {
     eprintln!(
         "Usage:
   deskbridge server --bind 0.0.0.0:24920
+  deskbridge server --bind 0.0.0.0:24920 --edge right
   deskbridge client --server WINDOWS_IP:24920
 
 Goal:
   Windows server + macOS client keyboard/mouse sharing, text/image/file clipboard,
-  and file drag transfer over a Deskflow-like independent protocol."
+  and file clipboard transfer over a Deskflow-like independent protocol."
     );
 }
