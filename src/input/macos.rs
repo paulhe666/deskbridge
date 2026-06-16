@@ -1,11 +1,13 @@
 use std::collections::HashSet;
+use std::env;
 use std::io::ErrorKind;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use core_graphics::display::CGDisplay;
 use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventTapLocation, CGMouseButton, ScrollEventUnit,
+    CGEvent, CGEventFlags, CGEventTapLocation, CGMouseButton, EventField, ScrollEventUnit,
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
@@ -22,12 +24,17 @@ const RIGHT_SHIFT_KEYCODE: u16 = 60;
 const SPACE_KEYCODE: u16 = 49;
 const NUMBER_4_KEYCODE: u16 = 21;
 const PRINT_SCREEN_SCANCODE: u16 = 311;
-const REPEAT_DELAY: Duration = Duration::from_millis(28);
+const DEFAULT_SCROLL_FRAME_MS: u64 = 8;
+const DEFAULT_SCROLL_SCALE: f64 = 1.25;
+const DEFAULT_SCROLL_RESPONSE: f64 = 0.34;
+const DEFAULT_SCROLL_MAX_STEP: f64 = 96.0;
+const SCROLL_ACCEL_WINDOW: Duration = Duration::from_millis(85);
 
 pub struct InputSink {
     source: CGEventSource,
     pressed_keys: HashSet<u16>,
     mouse_position: CGPoint,
+    scroll: SmoothScroller,
 }
 
 impl InputSink {
@@ -38,6 +45,7 @@ impl InputSink {
             source,
             pressed_keys: HashSet::new(),
             mouse_position: CGPoint::new(0.0, 0.0),
+            scroll: SmoothScroller::spawn(),
         })
     }
 
@@ -76,10 +84,11 @@ impl InputSink {
             }
             KeyState::Repeat => {
                 if self.pressed_keys.contains(&keycode) {
-                    self.post_key(keycode, false)?;
-                    thread::sleep(REPEAT_DELAY);
+                    self.post_key_repeat(keycode)?;
+                } else {
+                    self.pressed_keys.insert(keycode);
+                    self.post_key(keycode, true)?;
                 }
-                self.post_key(keycode, true)?;
             }
         }
         Ok(())
@@ -101,7 +110,21 @@ impl InputSink {
     }
 
     fn post_key(&self, keycode: u16, down: bool) -> std::io::Result<()> {
-        self.post_key_with_flags(keycode, down, flags_for_pressed_keys(&self.pressed_keys))
+        self.post_key_with_flags_and_repeat(
+            keycode,
+            down,
+            flags_for_pressed_keys(&self.pressed_keys),
+            false,
+        )
+    }
+
+    fn post_key_repeat(&self, keycode: u16) -> std::io::Result<()> {
+        self.post_key_with_flags_and_repeat(
+            keycode,
+            true,
+            flags_for_pressed_keys(&self.pressed_keys),
+            true,
+        )
     }
 
     fn post_key_with_flags(
@@ -110,9 +133,20 @@ impl InputSink {
         down: bool,
         flags: CGEventFlags,
     ) -> std::io::Result<()> {
+        self.post_key_with_flags_and_repeat(keycode, down, flags, false)
+    }
+
+    fn post_key_with_flags_and_repeat(
+        &self,
+        keycode: u16,
+        down: bool,
+        flags: CGEventFlags,
+        autorepeat: bool,
+    ) -> std::io::Result<()> {
         let event = CGEvent::new_keyboard_event(self.source.clone(), keycode, down)
             .map_err(|_| event_err("failed to create key event"))?;
         event.set_flags(flags);
+        event.set_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT, i64::from(autorepeat));
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -160,18 +194,210 @@ impl InputSink {
     }
 
     fn mouse_wheel(&self, horizontal: i16, vertical: i16) -> std::io::Result<()> {
-        let event = CGEvent::new_scroll_event(
-            self.source.clone(),
-            ScrollEventUnit::PIXEL,
-            2,
-            vertical as i32,
-            horizontal as i32,
-            0,
-        )
-        .map_err(|_| event_err("failed to create scroll event"))?;
-        event.post(CGEventTapLocation::HID);
-        Ok(())
+        self.scroll.push(horizontal as i32, vertical as i32)
     }
+}
+
+#[derive(Clone)]
+struct SmoothScroller {
+    sender: Sender<ScrollDelta>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScrollDelta {
+    horizontal: i32,
+    vertical: i32,
+    at: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScrollConfig {
+    frame_interval: Duration,
+    scale: f64,
+    response: f64,
+    max_step: f64,
+}
+
+impl SmoothScroller {
+    fn spawn() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || scroll_worker_loop(receiver, ScrollConfig::from_env()));
+        Self { sender }
+    }
+
+    fn push(&self, horizontal: i32, vertical: i32) -> std::io::Result<()> {
+        self.sender
+            .send(ScrollDelta {
+                horizontal,
+                vertical,
+                at: Instant::now(),
+            })
+            .map_err(|e| std::io::Error::new(ErrorKind::BrokenPipe, e))
+    }
+}
+
+impl ScrollConfig {
+    fn from_env() -> Self {
+        let frame_ms = env_u64("DESKBRIDGE_SCROLL_FRAME_MS", DEFAULT_SCROLL_FRAME_MS).max(4);
+        Self {
+            frame_interval: Duration::from_millis(frame_ms),
+            scale: env_f64("DESKBRIDGE_SCROLL_SCALE", DEFAULT_SCROLL_SCALE).clamp(0.2, 5.0),
+            response: env_f64("DESKBRIDGE_SCROLL_RESPONSE", DEFAULT_SCROLL_RESPONSE)
+                .clamp(0.12, 0.75),
+            max_step: env_f64("DESKBRIDGE_SCROLL_MAX_STEP", DEFAULT_SCROLL_MAX_STEP)
+                .clamp(12.0, 320.0),
+        }
+    }
+}
+
+fn scroll_worker_loop(receiver: Receiver<ScrollDelta>, config: ScrollConfig) {
+    let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        Ok(source) => source,
+        Err(_) => {
+            eprintln!("smooth scroll disabled: failed to create event source");
+            return;
+        }
+    };
+    let mut pending_h = 0.0;
+    let mut pending_v = 0.0;
+    let mut last_input = None;
+    let mut last_emit = Instant::now();
+
+    loop {
+        let timeout = config
+            .frame_interval
+            .checked_sub(last_emit.elapsed())
+            .unwrap_or(Duration::ZERO);
+        match receiver.recv_timeout(timeout) {
+            Ok(delta) => {
+                add_scroll_delta(
+                    delta,
+                    &config,
+                    &mut pending_h,
+                    &mut pending_v,
+                    &mut last_input,
+                );
+                loop {
+                    match receiver.try_recv() {
+                        Ok(delta) => add_scroll_delta(
+                            delta,
+                            &config,
+                            &mut pending_h,
+                            &mut pending_v,
+                            &mut last_input,
+                        ),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => return,
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                emit_scroll_frame(&source, &config, &mut pending_h, &mut pending_v);
+                last_emit = Instant::now();
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+
+        if last_emit.elapsed() >= config.frame_interval {
+            emit_scroll_frame(&source, &config, &mut pending_h, &mut pending_v);
+            last_emit = Instant::now();
+        }
+    }
+}
+
+fn add_scroll_delta(
+    delta: ScrollDelta,
+    config: &ScrollConfig,
+    pending_h: &mut f64,
+    pending_v: &mut f64,
+    last_input: &mut Option<Instant>,
+) {
+    let boost = last_input
+        .map(|last| scroll_boost(delta.at.saturating_duration_since(last)))
+        .unwrap_or(1.0);
+    *pending_h += delta.horizontal as f64 * config.scale * boost;
+    *pending_v += delta.vertical as f64 * config.scale * boost;
+    *last_input = Some(delta.at);
+}
+
+fn scroll_boost(delta: Duration) -> f64 {
+    if delta >= SCROLL_ACCEL_WINDOW {
+        1.0
+    } else {
+        let closeness = 1.0 - delta.as_secs_f64() / SCROLL_ACCEL_WINDOW.as_secs_f64();
+        1.0 + closeness * 0.45
+    }
+}
+
+fn emit_scroll_frame(
+    source: &CGEventSource,
+    config: &ScrollConfig,
+    pending_h: &mut f64,
+    pending_v: &mut f64,
+) {
+    let horizontal = take_scroll_step(pending_h, config);
+    let vertical = take_scroll_step(pending_v, config);
+    if horizontal == 0 && vertical == 0 {
+        return;
+    }
+    if let Err(e) = post_scroll(source, horizontal, vertical) {
+        eprintln!("scroll post failed: {e}");
+    }
+}
+
+fn take_scroll_step(value: &mut f64, config: &ScrollConfig) -> i32 {
+    if value.abs() < 0.75 {
+        *value = 0.0;
+        return 0;
+    }
+    let sign = value.signum();
+    let mut step = (*value * config.response).clamp(-config.max_step, config.max_step);
+    if step.abs() < 1.0 {
+        step = sign;
+    }
+    let mut rounded = step.round() as i32;
+    if rounded == 0 {
+        rounded = sign as i32;
+    }
+    *value -= rounded as f64;
+    rounded
+}
+
+fn post_scroll(source: &CGEventSource, horizontal: i32, vertical: i32) -> std::io::Result<()> {
+    let event = CGEvent::new_scroll_event(
+        source.clone(),
+        ScrollEventUnit::PIXEL,
+        2,
+        vertical,
+        horizontal,
+        0,
+    )
+    .map_err(|_| event_err("failed to create scroll event"))?;
+    event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS, 1);
+    event.set_integer_value_field(
+        EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1,
+        vertical as i64,
+    );
+    event.set_integer_value_field(
+        EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_2,
+        horizontal as i64,
+    );
+    event.post(CGEventTapLocation::HID);
+    Ok(())
+}
+
+fn env_f64(name: &str, default: f64) -> f64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
 }
 
 fn scancode_to_macos_key(scancode: u16) -> Option<u16> {

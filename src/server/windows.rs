@@ -1,23 +1,30 @@
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::mem::zeroed;
 use std::net::{TcpListener, TcpStream};
+use std::os::windows::ffi::OsStrExt;
+use std::path::PathBuf;
 use std::ptr;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SCROLL;
+use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, GetSystemMetrics, HC_ACTION, HHOOK,
-    KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, SM_CXSCREEN,
-    SM_CYSCREEN, SetCursorPos, SetProcessDPIAware, SetWindowsHookExW, TranslateMessage,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
-    XBUTTON1, XBUTTON2,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+    GetSystemMetrics, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP, LLMHF_INJECTED,
+    LWA_ALPHA, MSG, MSLLHOOKSTRUCT, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNA,
+    SetCursorPos, SetLayeredWindowAttributes, SetProcessDPIAware, SetWindowsHookExW, ShowWindow,
+    TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_DROPFILES, WM_KEYDOWN,
+    WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_EX_ACCEPTFILES, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, XBUTTON1, XBUTTON2,
 };
 
 use super::{Edge, ServerConfig};
@@ -31,8 +38,12 @@ use crate::transport::SharedWriter;
 const DEFAULT_REMOTE_WIDTH: i32 = 1366;
 const DEFAULT_REMOTE_HEIGHT: i32 = 768;
 const WHEEL_PIXELS_PER_DETENT: i32 = 240;
+const INPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
+const DROP_STRIP_WIDTH: i32 = 18;
+const DROP_STRIP_ALPHA: u8 = 48;
 
 static CAPTURE_STATE: OnceLock<Arc<Mutex<CaptureState>>> = OnceLock::new();
+static TRANSFER_WRITER: OnceLock<SharedWriter> = OnceLock::new();
 
 pub fn run(config: ServerConfig) -> std::io::Result<()> {
     unsafe {
@@ -47,6 +58,7 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
 
     let writer = SharedWriter::new(stream.try_clone()?);
     writer.write(Frame::new(FrameKind::Hello, protocol::hello_payload()))?;
+    let _ = TRANSFER_WRITER.set(writer.clone());
 
     let remote_size = read_client_hello(&mut stream)?;
     eprintln!(
@@ -55,8 +67,9 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
     );
 
     let last_clipboard = Arc::new(Mutex::new(None));
+    let input = InputEmitter::spawn(writer.clone());
     let state = Arc::new(Mutex::new(CaptureState::new(
-        writer.clone(),
+        input,
         config.edge,
         remote_size,
     )));
@@ -70,10 +83,13 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
     spawn_inbound_reader(stream, Arc::clone(&last_clipboard));
     spawn_clipboard_watcher(writer, last_clipboard);
 
+    let drop_strip = DropStrip::create(config.edge)?;
     let hooks = Hooks::install()?;
     eprintln!("input hooks installed; move the mouse through the configured edge to control macOS");
+    eprintln!("file drop strip active on the {:?} edge", config.edge);
     message_loop();
     drop(hooks);
+    drop(drop_strip);
     Ok(())
 }
 
@@ -237,6 +253,77 @@ impl Drop for Hooks {
     }
 }
 
+struct DropStrip {
+    hwnd: HWND,
+}
+
+impl DropStrip {
+    fn create(edge: Edge) -> std::io::Result<Self> {
+        let class_name = wide_null("DeskbridgeDropStrip");
+        let title = wide_null("Deskbridge File Drop");
+        let module = unsafe { GetModuleHandleW(ptr::null()) };
+        let wnd_class = WNDCLASSW {
+            style: 0,
+            lpfnWndProc: Some(drop_strip_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: module,
+            hIcon: ptr::null_mut(),
+            hCursor: ptr::null_mut(),
+            hbrBackground: ptr::null_mut(),
+            lpszMenuName: ptr::null(),
+            lpszClassName: class_name.as_ptr(),
+        };
+        unsafe {
+            RegisterClassW(&wnd_class);
+        }
+
+        let screen = screen_size();
+        let x = match edge {
+            Edge::Right => screen.0.saturating_sub(DROP_STRIP_WIDTH),
+            Edge::Left => 0,
+        };
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_TOPMOST
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_NOACTIVATE
+                    | WS_EX_ACCEPTFILES
+                    | WS_EX_LAYERED,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                WS_POPUP,
+                x,
+                0,
+                DROP_STRIP_WIDTH,
+                screen.1,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                module,
+                ptr::null(),
+            )
+        };
+        if hwnd.is_null() {
+            return Err(last_os_error("CreateWindowExW drop strip failed"));
+        }
+        unsafe {
+            SetLayeredWindowAttributes(hwnd, 0, DROP_STRIP_ALPHA, LWA_ALPHA);
+            DragAcceptFiles(hwnd, 1);
+            ShowWindow(hwnd, SW_SHOWNA);
+        }
+        Ok(Self { hwnd })
+    }
+}
+
+impl Drop for DropStrip {
+    fn drop(&mut self) {
+        unsafe {
+            DragAcceptFiles(self.hwnd, 0);
+            DestroyWindow(self.hwnd);
+        }
+    }
+}
+
 fn message_loop() {
     let mut msg: MSG = unsafe { zeroed() };
     while unsafe { GetMessageW(&mut msg, ptr::null_mut(), 0, 0) } > 0 {
@@ -247,27 +334,83 @@ fn message_loop() {
     }
 }
 
+unsafe extern "system" fn drop_strip_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_DROPFILES {
+        let hdrop = wparam as HDROP;
+        let files = dropped_files_from_hdrop(hdrop);
+        unsafe {
+            DragFinish(hdrop);
+        }
+        if !files.is_empty() {
+            send_dropped_files(files);
+        }
+        return 0;
+    }
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+fn dropped_files_from_hdrop(hdrop: HDROP) -> Vec<PathBuf> {
+    let count = unsafe { DragQueryFileW(hdrop, u32::MAX, ptr::null_mut(), 0) };
+    let mut files = Vec::new();
+    for i in 0..count {
+        let len = unsafe { DragQueryFileW(hdrop, i, ptr::null_mut(), 0) };
+        if len == 0 {
+            continue;
+        }
+        let mut buffer = vec![0u16; len as usize + 1];
+        let written = unsafe { DragQueryFileW(hdrop, i, buffer.as_mut_ptr(), buffer.len() as u32) };
+        if written != 0 {
+            files.push(PathBuf::from(String::from_utf16_lossy(
+                &buffer[..written as usize],
+            )));
+        }
+    }
+    files
+}
+
+fn send_dropped_files(files: Vec<PathBuf>) {
+    let Some(writer) = TRANSFER_WRITER.get().cloned() else {
+        eprintln!("drop ignored: no connected client");
+        return;
+    };
+    eprintln!("sending {} dropped file(s) to macOS", files.len());
+    thread::spawn(move || {
+        let result = file_transfer::send_files(&writer, &files)
+            .and_then(|_| writer.write(Frame::new(FrameKind::DragEnd, Vec::new())));
+        if let Err(e) = result {
+            eprintln!("dropped file transfer failed: {e}");
+        }
+    });
+}
+
 struct CaptureState {
-    writer: SharedWriter,
+    input: InputEmitter,
     edge: Edge,
     win_size: (i32, i32),
     remote_size: (i32, i32),
     remote_pos: (i32, i32),
     active: bool,
     warping: bool,
+    local_left_down: bool,
     pressed_keys: HashSet<u16>,
 }
 
 impl CaptureState {
-    fn new(writer: SharedWriter, edge: Edge, remote_size: (i32, i32)) -> Self {
+    fn new(input: InputEmitter, edge: Edge, remote_size: (i32, i32)) -> Self {
         Self {
-            writer,
+            input,
             edge,
             win_size: screen_size(),
             remote_size,
             remote_pos: (0, 0),
             active: false,
             warping: false,
+            local_left_down: false,
             pressed_keys: HashSet::new(),
         }
     }
@@ -306,6 +449,11 @@ impl CaptureState {
             return self.handle_mouse_move(hook);
         }
         if !self.active {
+            match message {
+                WM_LBUTTONDOWN => self.local_left_down = true,
+                WM_LBUTTONUP => self.local_left_down = false,
+                _ => {}
+            }
             return false;
         }
 
@@ -355,6 +503,9 @@ impl CaptureState {
 
         self.win_size = screen_size();
         if self.crossed_edge(hook.pt.x) {
+            if self.local_left_down {
+                return false;
+            }
             self.activate(hook.pt.y);
             return true;
         }
@@ -363,6 +514,7 @@ impl CaptureState {
 
     fn activate(&mut self, local_y: i32) {
         self.active = true;
+        self.local_left_down = false;
         self.win_size = screen_size();
         self.remote_pos = match self.edge {
             Edge::Right => (0, scaled_y(local_y, self.win_size.1, self.remote_size.1)),
@@ -436,12 +588,80 @@ impl CaptureState {
     }
 
     fn send_input(&self, event: InputEvent) {
-        if let Err(e) = self
-            .writer
-            .write(Frame::new(FrameKind::Input, protocol::encode_input(&event)))
-        {
-            eprintln!("input send failed: {e}");
+        self.input.send(event);
+    }
+}
+
+#[derive(Clone)]
+struct InputEmitter {
+    sender: Sender<InputEvent>,
+}
+
+impl InputEmitter {
+    fn spawn(writer: SharedWriter) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || input_writer_loop(writer, receiver));
+        Self { sender }
+    }
+
+    fn send(&self, event: InputEvent) {
+        if let Err(e) = self.sender.send(event) {
+            eprintln!("input queue closed: {e}");
         }
+    }
+}
+
+fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
+    let mut pending_move = None;
+    let mut pending_wheel = (0i32, 0i32);
+
+    loop {
+        match receiver.recv_timeout(INPUT_FLUSH_INTERVAL) {
+            Ok(InputEvent::MouseMove { x, y }) => {
+                pending_move = Some((x, y));
+            }
+            Ok(InputEvent::MouseWheel {
+                horizontal,
+                vertical,
+            }) => {
+                pending_wheel.0 += horizontal as i32;
+                pending_wheel.1 += vertical as i32;
+            }
+            Ok(event) => {
+                flush_pending_input(&writer, &mut pending_move, &mut pending_wheel);
+                write_input_event(&writer, event);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                flush_pending_input(&writer, &mut pending_move, &mut pending_wheel);
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn flush_pending_input(
+    writer: &SharedWriter,
+    pending_move: &mut Option<(i32, i32)>,
+    pending_wheel: &mut (i32, i32),
+) {
+    if let Some((x, y)) = pending_move.take() {
+        write_input_event(writer, InputEvent::MouseMove { x, y });
+    }
+    if pending_wheel.0 != 0 || pending_wheel.1 != 0 {
+        write_input_event(
+            writer,
+            InputEvent::MouseWheel {
+                horizontal: clamp(pending_wheel.0, i16::MIN as i32, i16::MAX as i32) as i16,
+                vertical: clamp(pending_wheel.1, i16::MIN as i32, i16::MAX as i32) as i16,
+            },
+        );
+        *pending_wheel = (0, 0);
+    }
+}
+
+fn write_input_event(writer: &SharedWriter, event: InputEvent) {
+    if let Err(e) = writer.write(Frame::new(FrameKind::Input, protocol::encode_input(&event))) {
+        eprintln!("input send failed: {e}");
     }
 }
 
@@ -499,6 +719,10 @@ fn screen_size() -> (i32, i32) {
     let width = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1);
     let height = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(1);
     (width, height)
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    OsStr::new(value).encode_wide().chain(Some(0)).collect()
 }
 
 fn scaled_y(y: i32, from_height: i32, to_height: i32) -> i32 {

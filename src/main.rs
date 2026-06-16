@@ -81,6 +81,6 @@ fn print_usage() {
 
 Goal:
   Windows server + macOS client keyboard/mouse sharing, text/image/file clipboard,
-  and file clipboard transfer over a Deskflow-like independent protocol."
+  low-latency input, and Windows edge file-drop transfer."
     );
 }
