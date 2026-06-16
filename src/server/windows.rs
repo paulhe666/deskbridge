@@ -43,9 +43,6 @@ const DROP_STRIP_WIDTH: i32 = 18;
 const DROP_STRIP_ALPHA: u8 = 48;
 const EDGE_TRIGGER_MARGIN: i32 = 6;
 const RECENTER_MARGIN: i32 = 96;
-const RETURN_EDGE_MARGIN: i32 = 8;
-const RETURN_PUSH_THRESHOLD: i32 = 72;
-const RETURN_GRACE: Duration = Duration::from_millis(180);
 
 static CAPTURE_STATE: OnceLock<Arc<Mutex<CaptureState>>> = OnceLock::new();
 static TRANSFER_WRITER: OnceLock<SharedWriter> = OnceLock::new();
@@ -423,8 +420,6 @@ struct CaptureState {
     active: bool,
     warping: bool,
     local_left_down: bool,
-    activated_at: Instant,
-    return_push: i32,
     pressed_keys: HashSet<u16>,
 }
 
@@ -440,8 +435,6 @@ impl CaptureState {
             active: false,
             warping: false,
             local_left_down: false,
-            activated_at: Instant::now(),
-            return_push: 0,
             pressed_keys: HashSet::new(),
         }
     }
@@ -519,11 +512,6 @@ impl CaptureState {
                 return true;
             }
 
-            if self.should_leave_remote(dx) {
-                self.deactivate();
-                return true;
-            }
-
             self.remote_pos.0 = clamp(self.remote_pos.0 + dx, 0, self.remote_size.0 - 1);
             self.remote_pos.1 = clamp(self.remote_pos.1 + dy, 0, self.remote_size.1 - 1);
             self.send_input(InputEvent::MouseMove {
@@ -550,8 +538,6 @@ impl CaptureState {
     fn activate(&mut self, local_y: i32) {
         self.active = true;
         self.local_left_down = false;
-        self.activated_at = Instant::now();
-        self.return_push = 0;
         self.win_size = screen_size();
         self.remote_pos = match self.edge {
             Edge::Right => (0, scaled_y(local_y, self.win_size.1, self.remote_size.1)),
@@ -566,7 +552,7 @@ impl CaptureState {
         });
         self.warp_to_anchor();
         eprintln!(
-            "entered macOS control at {},{}",
+            "entered macOS control at {},{}; press Scroll Lock to release",
             self.remote_pos.0, self.remote_pos.1
         );
     }
@@ -581,7 +567,6 @@ impl CaptureState {
         }
         self.active = false;
         self.warping = false;
-        self.return_push = 0;
         let x = match self.edge {
             Edge::Right => self.win_size.0.saturating_sub(2),
             Edge::Left => 1,
@@ -597,31 +582,6 @@ impl CaptureState {
             Edge::Right => x >= self.win_size.0.saturating_sub(EDGE_TRIGGER_MARGIN),
             Edge::Left => x <= EDGE_TRIGGER_MARGIN,
         }
-    }
-
-    fn should_leave_remote(&mut self, dx: i32) -> bool {
-        if self.activated_at.elapsed() < RETURN_GRACE {
-            self.return_push = 0;
-            return false;
-        }
-
-        let at_return_edge = match self.edge {
-            Edge::Right => self.remote_pos.0 <= RETURN_EDGE_MARGIN,
-            Edge::Left => {
-                self.remote_pos.0 >= self.remote_size.0.saturating_sub(1 + RETURN_EDGE_MARGIN)
-            }
-        };
-        let pushing_out = match self.edge {
-            Edge::Right => dx < 0,
-            Edge::Left => dx > 0,
-        };
-        if !at_return_edge || !pushing_out {
-            self.return_push = 0;
-            return false;
-        }
-
-        self.return_push = (self.return_push + dx.abs()).min(RETURN_PUSH_THRESHOLD);
-        self.return_push >= RETURN_PUSH_THRESHOLD
     }
 
     fn anchor(&self) -> (i32, i32) {
