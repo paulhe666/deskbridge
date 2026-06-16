@@ -509,7 +509,7 @@ impl CaptureState {
             let dy = current.1 - self.local_pos.1;
             self.local_pos = current;
             if dx == 0 && dy == 0 {
-                return true;
+                return false;
             }
 
             self.remote_pos.0 = clamp(self.remote_pos.0 + dx, 0, self.remote_size.0 - 1);
@@ -520,8 +520,9 @@ impl CaptureState {
             });
             if self.should_recenter_local_cursor(current) {
                 self.warp_to_anchor();
+                return true;
             }
-            return true;
+            return false;
         }
 
         self.win_size = screen_size();
