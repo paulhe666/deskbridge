@@ -41,6 +41,7 @@ const WHEEL_PIXELS_PER_DETENT: i32 = 240;
 const INPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 const DROP_STRIP_WIDTH: i32 = 18;
 const DROP_STRIP_ALPHA: u8 = 48;
+const EDGE_TRIGGER_MARGIN: i32 = 6;
 const RECENTER_MARGIN: i32 = 96;
 
 static CAPTURE_STATE: OnceLock<Arc<Mutex<CaptureState>>> = OnceLock::new();
@@ -97,10 +98,17 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
     spawn_inbound_reader(stream, Arc::clone(&last_clipboard));
     spawn_clipboard_watcher(writer, last_clipboard);
 
-    let drop_strip = DropStrip::create(config.edge)?;
+    let drop_strip = if drop_strip_enabled() {
+        Some(DropStrip::create(config.edge)?)
+    } else {
+        eprintln!("file drop strip disabled; use the GUI drop zone for file drag transfer");
+        None
+    };
     let hooks = Hooks::install()?;
     eprintln!("input hooks installed; move the mouse through the configured edge to control macOS");
-    eprintln!("file drop strip active on the {:?} edge", config.edge);
+    if drop_strip.is_some() {
+        eprintln!("file drop strip active on the {:?} edge", config.edge);
+    }
     message_loop();
     drop(hooks);
     drop(drop_strip);
@@ -548,6 +556,10 @@ impl CaptureState {
             y: self.remote_pos.1,
         });
         self.warp_to_anchor();
+        eprintln!(
+            "entered macOS control at {},{}",
+            self.remote_pos.0, self.remote_pos.1
+        );
     }
 
     fn deactivate(&mut self) {
@@ -572,8 +584,8 @@ impl CaptureState {
 
     fn crossed_edge(&self, x: i32) -> bool {
         match self.edge {
-            Edge::Right => x >= self.win_size.0.saturating_sub(1),
-            Edge::Left => x <= 0,
+            Edge::Right => x >= self.win_size.0.saturating_sub(EDGE_TRIGGER_MARGIN),
+            Edge::Left => x <= EDGE_TRIGGER_MARGIN,
         }
     }
 
@@ -747,6 +759,12 @@ fn screen_size() -> (i32, i32) {
     let width = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1);
     let height = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(1);
     (width, height)
+}
+
+fn drop_strip_enabled() -> bool {
+    std::env::var("DESKBRIDGE_DROP_STRIP")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 fn wide_null(value: &str) -> Vec<u16> {
