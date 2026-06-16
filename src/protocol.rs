@@ -1,0 +1,295 @@
+use std::io::{Read, Write};
+use std::path::PathBuf;
+
+pub const VERSION: u16 = 1;
+pub const CHUNK_SIZE: usize = 512 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FrameKind {
+    Hello = 1,
+    Input = 2,
+    Clipboard = 3,
+    FileStart = 4,
+    FileChunk = 5,
+    FileEnd = 6,
+    DragStart = 7,
+    DragUpdate = 8,
+    DragEnd = 9,
+    Error = 10,
+}
+
+impl FrameKind {
+    fn from_byte(byte: u8) -> std::io::Result<Self> {
+        match byte {
+            1 => Ok(Self::Hello),
+            2 => Ok(Self::Input),
+            3 => Ok(Self::Clipboard),
+            4 => Ok(Self::FileStart),
+            5 => Ok(Self::FileChunk),
+            6 => Ok(Self::FileEnd),
+            7 => Ok(Self::DragStart),
+            8 => Ok(Self::DragUpdate),
+            9 => Ok(Self::DragEnd),
+            10 => Ok(Self::Error),
+            _ => Err(invalid("unknown frame kind")),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Frame {
+    pub kind: FrameKind,
+    pub payload: Vec<u8>,
+}
+
+impl Frame {
+    pub fn new(kind: FrameKind, payload: Vec<u8>) -> Self {
+        Self { kind, payload }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipboardPayload {
+    Text(String),
+    Bitmap(Vec<u8>),
+    Files(Vec<PathBuf>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyState {
+    Down,
+    Up,
+    Repeat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    Extra(u8),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputEvent {
+    Key { scancode: u16, state: KeyState },
+    MouseMove { x: i32, y: i32 },
+    MouseButton { button: MouseButton, down: bool },
+    MouseWheel { horizontal: i16, vertical: i16 },
+}
+
+pub fn read_frame(reader: &mut impl Read) -> std::io::Result<Frame> {
+    let mut kind = [0u8; 1];
+    reader.read_exact(&mut kind)?;
+    let mut len = [0u8; 8];
+    reader.read_exact(&mut len)?;
+    let len = u64::from_be_bytes(len) as usize;
+    let mut payload = vec![0u8; len];
+    reader.read_exact(&mut payload)?;
+    Ok(Frame::new(FrameKind::from_byte(kind[0])?, payload))
+}
+
+pub fn write_frame(writer: &mut impl Write, frame: &Frame) -> std::io::Result<()> {
+    writer.write_all(&[frame.kind as u8])?;
+    writer.write_all(&(frame.payload.len() as u64).to_be_bytes())?;
+    writer.write_all(&frame.payload)?;
+    writer.flush()
+}
+
+pub fn hello_payload() -> Vec<u8> {
+    VERSION.to_be_bytes().to_vec()
+}
+
+pub fn encode_input(event: &InputEvent) -> Vec<u8> {
+    let mut payload = Vec::new();
+    match *event {
+        InputEvent::Key { scancode, state } => {
+            payload.push(1);
+            payload.extend_from_slice(&scancode.to_be_bytes());
+            payload.push(match state {
+                KeyState::Down => 1,
+                KeyState::Up => 2,
+                KeyState::Repeat => 3,
+            });
+        }
+        InputEvent::MouseMove { x, y } => {
+            payload.push(2);
+            payload.extend_from_slice(&x.to_be_bytes());
+            payload.extend_from_slice(&y.to_be_bytes());
+        }
+        InputEvent::MouseButton { button, down } => {
+            payload.push(3);
+            payload.push(match button {
+                MouseButton::Left => 1,
+                MouseButton::Middle => 2,
+                MouseButton::Right => 3,
+                MouseButton::Extra(id) => id,
+            });
+            payload.push(u8::from(down));
+        }
+        InputEvent::MouseWheel {
+            horizontal,
+            vertical,
+        } => {
+            payload.push(4);
+            payload.extend_from_slice(&horizontal.to_be_bytes());
+            payload.extend_from_slice(&vertical.to_be_bytes());
+        }
+    }
+    payload
+}
+
+pub fn decode_input(payload: &[u8]) -> std::io::Result<InputEvent> {
+    let kind = *payload
+        .first()
+        .ok_or_else(|| invalid("short input event"))?;
+    match kind {
+        1 => {
+            if payload.len() != 4 {
+                return Err(invalid("invalid key event"));
+            }
+            let scancode = u16::from_be_bytes([payload[1], payload[2]]);
+            let state = match payload[3] {
+                1 => KeyState::Down,
+                2 => KeyState::Up,
+                3 => KeyState::Repeat,
+                _ => return Err(invalid("invalid key state")),
+            };
+            Ok(InputEvent::Key { scancode, state })
+        }
+        2 => {
+            if payload.len() != 9 {
+                return Err(invalid("invalid mouse move event"));
+            }
+            let x = i32::from_be_bytes(payload[1..5].try_into().unwrap());
+            let y = i32::from_be_bytes(payload[5..9].try_into().unwrap());
+            Ok(InputEvent::MouseMove { x, y })
+        }
+        3 => {
+            if payload.len() != 3 {
+                return Err(invalid("invalid mouse button event"));
+            }
+            let button = match payload[1] {
+                1 => MouseButton::Left,
+                2 => MouseButton::Middle,
+                3 => MouseButton::Right,
+                id => MouseButton::Extra(id),
+            };
+            Ok(InputEvent::MouseButton {
+                button,
+                down: payload[2] != 0,
+            })
+        }
+        4 => {
+            if payload.len() != 5 {
+                return Err(invalid("invalid wheel event"));
+            }
+            Ok(InputEvent::MouseWheel {
+                horizontal: i16::from_be_bytes([payload[1], payload[2]]),
+                vertical: i16::from_be_bytes([payload[3], payload[4]]),
+            })
+        }
+        _ => Err(invalid("unknown input event kind")),
+    }
+}
+
+pub fn encode_clipboard(payload: &ClipboardPayload) -> Vec<u8> {
+    let mut out = Vec::new();
+    match payload {
+        ClipboardPayload::Text(text) => {
+            out.push(1);
+            write_bytes(&mut out, text.as_bytes());
+        }
+        ClipboardPayload::Bitmap(bitmap) => {
+            out.push(2);
+            write_bytes(&mut out, bitmap);
+        }
+        ClipboardPayload::Files(files) => {
+            out.push(3);
+            out.extend_from_slice(&(files.len() as u32).to_be_bytes());
+            for file in files {
+                write_bytes(&mut out, file.to_string_lossy().as_bytes());
+            }
+        }
+    }
+    out
+}
+
+pub fn decode_clipboard(payload: &[u8]) -> std::io::Result<ClipboardPayload> {
+    let kind = *payload
+        .first()
+        .ok_or_else(|| invalid("short clipboard payload"))?;
+    let mut offset = 1;
+    match kind {
+        1 => Ok(ClipboardPayload::Text(
+            String::from_utf8(read_bytes(payload, &mut offset)?.to_vec())
+                .map_err(|e| invalid_owned(e.to_string()))?,
+        )),
+        2 => Ok(ClipboardPayload::Bitmap(
+            read_bytes(payload, &mut offset)?.to_vec(),
+        )),
+        3 => {
+            let count = read_u32(payload, &mut offset)?;
+            let mut files = Vec::new();
+            for _ in 0..count {
+                files.push(PathBuf::from(
+                    String::from_utf8(read_bytes(payload, &mut offset)?.to_vec())
+                        .map_err(|e| invalid_owned(e.to_string()))?,
+                ));
+            }
+            Ok(ClipboardPayload::Files(files))
+        }
+        _ => Err(invalid("unknown clipboard payload kind")),
+    }
+}
+
+pub fn encode_file_start(relative: &str, len: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_bytes(&mut out, relative.as_bytes());
+    out.extend_from_slice(&len.to_be_bytes());
+    out
+}
+
+pub fn decode_file_start(payload: &[u8]) -> std::io::Result<(String, u64)> {
+    let mut offset = 0;
+    let relative = String::from_utf8(read_bytes(payload, &mut offset)?.to_vec())
+        .map_err(|e| invalid_owned(e.to_string()))?;
+    if payload.len() < offset + 8 {
+        return Err(invalid("short file start payload"));
+    }
+    let len = u64::from_be_bytes(payload[offset..offset + 8].try_into().unwrap());
+    Ok((relative, len))
+}
+
+fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn read_bytes<'a>(payload: &'a [u8], offset: &mut usize) -> std::io::Result<&'a [u8]> {
+    let len = read_u32(payload, offset)? as usize;
+    let end = *offset + len;
+    let bytes = payload
+        .get(*offset..end)
+        .ok_or_else(|| invalid("truncated bytes"))?;
+    *offset = end;
+    Ok(bytes)
+}
+
+fn read_u32(payload: &[u8], offset: &mut usize) -> std::io::Result<u32> {
+    let end = *offset + 4;
+    let bytes = payload
+        .get(*offset..end)
+        .ok_or_else(|| invalid("short u32"))?;
+    *offset = end;
+    Ok(u32::from_be_bytes(bytes.try_into().unwrap()))
+}
+
+fn invalid(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
+fn invalid_owned(message: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
