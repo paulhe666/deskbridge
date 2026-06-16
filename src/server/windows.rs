@@ -8,7 +8,7 @@ use std::ptr;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
@@ -654,11 +654,13 @@ impl InputEmitter {
 fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
     let mut pending_move = None;
     let mut pending_wheel = (0i32, 0i32);
+    let mut log = InputSendLog::default();
 
     loop {
         match receiver.recv_timeout(INPUT_FLUSH_INTERVAL) {
             Ok(InputEvent::MouseMove { x, y }) => {
                 pending_move = Some((x, y));
+                flush_pending_input(&writer, &mut pending_move, &mut pending_wheel, &mut log);
             }
             Ok(InputEvent::MouseWheel {
                 horizontal,
@@ -668,11 +670,11 @@ fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
                 pending_wheel.1 += vertical as i32;
             }
             Ok(event) => {
-                flush_pending_input(&writer, &mut pending_move, &mut pending_wheel);
-                write_input_event(&writer, event);
+                flush_pending_input(&writer, &mut pending_move, &mut pending_wheel, &mut log);
+                write_input_event(&writer, event, &mut log);
             }
             Err(RecvTimeoutError::Timeout) => {
-                flush_pending_input(&writer, &mut pending_move, &mut pending_wheel);
+                flush_pending_input(&writer, &mut pending_move, &mut pending_wheel, &mut log);
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -683,9 +685,10 @@ fn flush_pending_input(
     writer: &SharedWriter,
     pending_move: &mut Option<(i32, i32)>,
     pending_wheel: &mut (i32, i32),
+    log: &mut InputSendLog,
 ) {
     if let Some((x, y)) = pending_move.take() {
-        write_input_event(writer, InputEvent::MouseMove { x, y });
+        write_input_event(writer, InputEvent::MouseMove { x, y }, log);
     }
     if pending_wheel.0 != 0 || pending_wheel.1 != 0 {
         write_input_event(
@@ -694,14 +697,36 @@ fn flush_pending_input(
                 horizontal: clamp(pending_wheel.0, i16::MIN as i32, i16::MAX as i32) as i16,
                 vertical: clamp(pending_wheel.1, i16::MIN as i32, i16::MAX as i32) as i16,
             },
+            log,
         );
         *pending_wheel = (0, 0);
     }
 }
 
-fn write_input_event(writer: &SharedWriter, event: InputEvent) {
-    if let Err(e) = writer.write(Frame::new(FrameKind::Input, protocol::encode_input(&event))) {
-        eprintln!("input send failed: {e}");
+struct InputSendLog {
+    count: u64,
+    last_print: Instant,
+}
+
+impl Default for InputSendLog {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            last_print: Instant::now() - Duration::from_secs(2),
+        }
+    }
+}
+
+fn write_input_event(writer: &SharedWriter, event: InputEvent, log: &mut InputSendLog) {
+    let encoded = protocol::encode_input(&event);
+    if let Err(e) = writer.write(Frame::new(FrameKind::Input, encoded)) {
+        eprintln!("input send failed after {} sent event(s): {e}", log.count);
+        return;
+    }
+    log.count += 1;
+    if log.count == 1 || log.last_print.elapsed() >= Duration::from_secs(1) {
+        eprintln!("sent input event #{}: {:?}", log.count, event);
+        log.last_print = Instant::now();
     }
 }
 
