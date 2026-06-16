@@ -1,12 +1,12 @@
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::clipboard::{Clipboard, ClipboardApi};
 use crate::file_transfer;
 use crate::input::InputSink;
-use crate::protocol::{self, ClipboardPayload, Frame, FrameKind};
+use crate::protocol::{self, ClipboardPayload, Frame, FrameKind, InputEvent};
 use crate::transport::SharedWriter;
 
 pub fn run(server: &str) -> std::io::Result<()> {
@@ -30,11 +30,16 @@ pub fn run(server: &str) -> std::io::Result<()> {
     let mut incoming_files = file_transfer::IncomingBundle::new(receive_root);
     let last_clipboard = Arc::new(Mutex::new(None));
     spawn_clipboard_watcher(writer.clone(), Arc::clone(&last_clipboard));
+    let mut input_log = InputLog::default();
 
     loop {
         let frame = protocol::read_frame(&mut stream)?;
         match frame.kind {
-            FrameKind::Input => input.apply(protocol::decode_input(&frame.payload)?)?,
+            FrameKind::Input => {
+                let event = protocol::decode_input(&frame.payload)?;
+                input_log.observe(&event);
+                input.apply(event)?;
+            }
             FrameKind::Clipboard => {
                 let payload = protocol::decode_clipboard(&frame.payload)?;
                 remember_clipboard(&last_clipboard, &payload);
@@ -54,6 +59,30 @@ pub fn run(server: &str) -> std::io::Result<()> {
                 clipboard.write(&payload)?;
             }
             _ => {}
+        }
+    }
+}
+
+struct InputLog {
+    count: u64,
+    last_print: Instant,
+}
+
+impl Default for InputLog {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            last_print: Instant::now() - Duration::from_secs(2),
+        }
+    }
+}
+
+impl InputLog {
+    fn observe(&mut self, event: &InputEvent) {
+        self.count += 1;
+        if self.count == 1 || self.last_print.elapsed() >= Duration::from_secs(1) {
+            eprintln!("received input event #{}: {:?}", self.count, event);
+            self.last_print = Instant::now();
         }
     }
 }

@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 use std::env;
 use std::io::ErrorKind;
+use std::os::raw::c_uchar;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use core_graphics::display::CGDisplay;
 use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventTapLocation, CGMouseButton, EventField, ScrollEventUnit,
+    CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, EventField,
+    ScrollEventUnit,
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
@@ -32,9 +34,15 @@ const DEFAULT_SCROLL_RESPONSE: f64 = 0.34;
 const DEFAULT_SCROLL_MAX_STEP: f64 = 96.0;
 const SCROLL_ACCEL_WINDOW: Duration = Duration::from_millis(85);
 
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXIsProcessTrusted() -> c_uchar;
+}
+
 pub struct InputSink {
     source: CGEventSource,
     pressed_keys: HashSet<u16>,
+    mouse_buttons: MouseButtons,
     mouse_position: CGPoint,
     scroll: SmoothScroller,
     shift_tap_candidate: Option<u16>,
@@ -44,9 +52,15 @@ impl InputSink {
     pub fn new() -> std::io::Result<Self> {
         let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
             .map_err(|_| event_err("failed to create event source"))?;
+        if unsafe { AXIsProcessTrusted() } == 0 {
+            eprintln!(
+                "warning: macOS Accessibility permission is not granted for this process; input may be ignored"
+            );
+        }
         Ok(Self {
             source,
             pressed_keys: HashSet::new(),
+            mouse_buttons: MouseButtons::default(),
             mouse_position: CGPoint::new(0.0, 0.0),
             scroll: SmoothScroller::spawn(),
             shift_tap_candidate: None,
@@ -181,48 +195,85 @@ impl InputSink {
 
     fn mouse_move(&mut self, x: i32, y: i32) -> std::io::Result<()> {
         self.mouse_position = CGPoint::new(x as f64, y as f64);
-        let event = CGEvent::new_mouse_event(
-            self.source.clone(),
-            core_graphics::event::CGEventType::MouseMoved,
-            self.mouse_position,
-            CGMouseButton::Left,
-        )
-        .map_err(|_| event_err("failed to create mouse move event"))?;
+        if let Some((drag_ty, button)) = self.mouse_buttons.drag_event() {
+            let _ = CGDisplay::warp_mouse_cursor_position(self.mouse_position);
+            self.post_mouse_event(drag_ty, button)?;
+            return Ok(());
+        }
+
+        if let Err(code) = CGDisplay::warp_mouse_cursor_position(self.mouse_position) {
+            eprintln!("cursor warp failed ({code}); falling back to mouse move event");
+            self.post_mouse_event(CGEventType::MouseMoved, CGMouseButton::Left)?;
+        }
+        Ok(())
+    }
+
+    fn post_mouse_event(
+        &self,
+        event_type: CGEventType,
+        button: CGMouseButton,
+    ) -> std::io::Result<()> {
+        let event =
+            CGEvent::new_mouse_event(self.source.clone(), event_type, self.mouse_position, button)
+                .map_err(|_| event_err("failed to create mouse event"))?;
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
 
-    fn mouse_button(&self, button: MouseButton, down: bool) -> std::io::Result<()> {
+    fn mouse_button(&mut self, button: MouseButton, down: bool) -> std::io::Result<()> {
         let (button, down_ty, up_ty) = match button {
             MouseButton::Left => (
                 CGMouseButton::Left,
-                core_graphics::event::CGEventType::LeftMouseDown,
-                core_graphics::event::CGEventType::LeftMouseUp,
+                CGEventType::LeftMouseDown,
+                CGEventType::LeftMouseUp,
             ),
             MouseButton::Right => (
                 CGMouseButton::Right,
-                core_graphics::event::CGEventType::RightMouseDown,
-                core_graphics::event::CGEventType::RightMouseUp,
+                CGEventType::RightMouseDown,
+                CGEventType::RightMouseUp,
             ),
             _ => (
                 CGMouseButton::Center,
-                core_graphics::event::CGEventType::OtherMouseDown,
-                core_graphics::event::CGEventType::OtherMouseUp,
+                CGEventType::OtherMouseDown,
+                CGEventType::OtherMouseUp,
             ),
         };
-        let event = CGEvent::new_mouse_event(
-            self.source.clone(),
-            if down { down_ty } else { up_ty },
-            self.mouse_position,
-            button,
-        )
-        .map_err(|_| event_err("failed to create mouse button event"))?;
-        event.post(CGEventTapLocation::HID);
+        self.mouse_buttons.set(button, down);
+        self.post_mouse_event(if down { down_ty } else { up_ty }, button)?;
         Ok(())
     }
 
     fn mouse_wheel(&self, horizontal: i16, vertical: i16) -> std::io::Result<()> {
         self.scroll.push(horizontal as i32, vertical as i32)
+    }
+}
+
+#[derive(Default)]
+struct MouseButtons {
+    left: bool,
+    right: bool,
+    other: bool,
+}
+
+impl MouseButtons {
+    fn set(&mut self, button: CGMouseButton, down: bool) {
+        match button {
+            CGMouseButton::Left => self.left = down,
+            CGMouseButton::Right => self.right = down,
+            _ => self.other = down,
+        }
+    }
+
+    fn drag_event(&self) -> Option<(CGEventType, CGMouseButton)> {
+        if self.left {
+            Some((CGEventType::LeftMouseDragged, CGMouseButton::Left))
+        } else if self.right {
+            Some((CGEventType::RightMouseDragged, CGMouseButton::Right))
+        } else if self.other {
+            Some((CGEventType::OtherMouseDragged, CGMouseButton::Center))
+        } else {
+            None
+        }
     }
 }
 
