@@ -10,17 +10,22 @@ use crate::protocol::{self, ClipboardPayload, Frame, FrameKind};
 use crate::transport::SharedWriter;
 
 pub fn run(server: &str) -> std::io::Result<()> {
+    eprintln!("initializing macOS input sink");
+    let mut input = InputSink::new()?;
+    eprintln!("initializing macOS clipboard");
+    let mut clipboard = Clipboard::new()?;
+    eprintln!("connecting to {server}");
     let mut stream = TcpStream::connect(server)?;
     stream.set_nodelay(true)?;
     let writer = SharedWriter::new(stream.try_clone()?);
     let (width, height) = crate::input::screen_size();
+    eprintln!("connected; sending hello with screen {width}x{height}");
     writer.write(crate::protocol::Frame::new(
         FrameKind::Hello,
         protocol::hello_payload_with_screen(width, height),
     ))?;
 
-    let mut input = InputSink::new()?;
-    let mut clipboard = Clipboard::new()?;
+    eprintln!("client ready");
     let receive_root = std::env::temp_dir().join("deskbridge-received");
     let mut incoming_files = file_transfer::IncomingBundle::new(receive_root);
     let last_clipboard = Arc::new(Mutex::new(None));

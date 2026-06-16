@@ -3,14 +3,21 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist/macos"
-APP="$DIST/Deskbridge.app"
-BIN="$APP/Contents/MacOS/deskbridge"
-RES="$APP/Contents/Resources"
 
 cd "$ROOT"
 cargo build --release
 
-rm -rf "$DIST"
+if [ -d "$DIST" ]; then
+  chmod -R u+w "$DIST" || true
+fi
+if ! rm -rf "$DIST" 2>/dev/null; then
+  DIST="$ROOT/dist/macos-$(date +%Y%m%d%H%M%S)"
+fi
+
+APP="$DIST/Deskbridge.app"
+BIN="$APP/Contents/MacOS/deskbridge"
+RES="$APP/Contents/Resources"
+
 mkdir -p "$(dirname "$BIN")" "$RES"
 cp "$ROOT/target/release/deskbridge" "$BIN"
 

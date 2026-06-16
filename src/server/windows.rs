@@ -52,18 +52,31 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
 
     let listener = TcpListener::bind(&config.bind)?;
     eprintln!("deskbridge server listening on {}", config.bind);
-    let (mut stream, addr) = listener.accept()?;
-    stream.set_nodelay(true)?;
-    eprintln!("client connected from {addr}");
+    let (stream, addr, writer, remote_size) = loop {
+        let (mut stream, addr) = listener.accept()?;
+        stream.set_nodelay(true)?;
+        eprintln!("client connected from {addr}");
 
-    let writer = SharedWriter::new(stream.try_clone()?);
-    writer.write(Frame::new(FrameKind::Hello, protocol::hello_payload()))?;
+        let writer = SharedWriter::new(stream.try_clone()?);
+        if let Err(e) = writer.write(Frame::new(FrameKind::Hello, protocol::hello_payload())) {
+            eprintln!("failed to send hello to {addr}: {e}; waiting for another client");
+            continue;
+        }
+
+        match read_client_hello(&mut stream) {
+            Ok(remote_size) => break (stream, addr, writer, remote_size),
+            Err(e) => {
+                eprintln!(
+                    "client {addr} disconnected during handshake: {e}; waiting for another client"
+                );
+                continue;
+            }
+        }
+    };
     let _ = TRANSFER_WRITER.set(writer.clone());
-
-    let remote_size = read_client_hello(&mut stream)?;
     eprintln!(
-        "remote screen {}x{}, edge {:?}",
-        remote_size.0, remote_size.1, config.edge
+        "remote screen {}x{}, edge {:?}, client {}",
+        remote_size.0, remote_size.1, config.edge, addr
     );
 
     let last_clipboard = Arc::new(Mutex::new(None));
