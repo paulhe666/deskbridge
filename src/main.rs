@@ -2,7 +2,9 @@
 
 mod client;
 mod clipboard;
+mod config;
 mod file_transfer;
+mod gui;
 mod input;
 mod protocol;
 mod server;
@@ -13,6 +15,7 @@ use std::process::ExitCode;
 
 #[derive(Debug)]
 enum Command {
+    Gui,
     Server { bind: String, edge: server::Edge },
     Client { server: String },
 }
@@ -37,6 +40,7 @@ fn main() -> ExitCode {
     };
 
     let result = match command {
+        Command::Gui => return gui_exit_code(gui::run()),
         Command::Server { bind, edge } => server::run(server::ServerConfig { bind, edge }),
         Command::Client { server } => client::run(&server),
     };
@@ -49,6 +53,7 @@ fn main() -> ExitCode {
 
 fn parse_args(args: &[String]) -> Result<Command, String> {
     match args.first().map(String::as_str) {
+        None | Some("gui") => Ok(Command::Gui),
         Some("server") => {
             let bind = value_after(args, "--bind").unwrap_or_else(|| "0.0.0.0:24920".to_string());
             let edge = value_after(args, "--edge")
@@ -78,9 +83,20 @@ fn print_usage() {
   deskbridge server --bind 0.0.0.0:24920
   deskbridge server --bind 0.0.0.0:24920 --edge right
   deskbridge client --server WINDOWS_IP:24920
+  deskbridge gui
 
 Goal:
   Windows server + macOS client keyboard/mouse sharing, text/image/file clipboard,
   low-latency input, and Windows edge file-drop transfer."
     );
+}
+
+fn gui_exit_code(result: eframe::Result) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
