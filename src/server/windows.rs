@@ -41,12 +41,14 @@ use crate::transport::SharedWriter;
 
 const DEFAULT_REMOTE_WIDTH: i32 = 1366;
 const DEFAULT_REMOTE_HEIGHT: i32 = 768;
-const WHEEL_PIXELS_PER_DETENT: i32 = 240;
+const WHEEL_PIXELS_PER_DETENT: i32 = 120;
 const INPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 const DROP_STRIP_WIDTH: i32 = 18;
 const DROP_STRIP_ALPHA: u8 = 48;
 const EDGE_TRIGGER_MARGIN: i32 = 6;
 const CURSOR_LOCK_RADIUS: i32 = 2;
+const RETURN_EDGE_MARGIN: i32 = 4;
+const RETURN_PUSH_THRESHOLD: i32 = 48;
 
 static CAPTURE_STATE: OnceLock<Arc<Mutex<CaptureState>>> = OnceLock::new();
 static TRANSFER_WRITER: OnceLock<SharedWriter> = OnceLock::new();
@@ -558,6 +560,8 @@ struct CaptureState {
     edge: Edge,
     win_size: (i32, i32),
     remote_size: (i32, i32),
+    remote_pos: (i32, i32),
+    return_push: i32,
     active: bool,
     local_left_down: bool,
     pressed_keys: HashSet<u16>,
@@ -570,6 +574,8 @@ impl CaptureState {
             edge,
             win_size: screen_size(),
             remote_size,
+            remote_pos: (0, 0),
+            return_push: 0,
             active: false,
             local_left_down: false,
             pressed_keys: HashSet::new(),
@@ -658,6 +664,12 @@ impl CaptureState {
         if !self.active {
             return;
         }
+        if self.should_release_to_windows(dx) {
+            self.deactivate();
+            return;
+        }
+        self.remote_pos.0 = clamp(self.remote_pos.0 + dx, 0, self.remote_size.0 - 1);
+        self.remote_pos.1 = clamp(self.remote_pos.1 + dy, 0, self.remote_size.1 - 1);
         self.send_input(InputEvent::MouseDelta { dx, dy });
     }
 
@@ -665,21 +677,22 @@ impl CaptureState {
         self.active = true;
         self.local_left_down = false;
         self.win_size = screen_size();
-        let entry_pos = match self.edge {
+        self.remote_pos = match self.edge {
             Edge::Right => (0, scaled_y(local_y, self.win_size.1, self.remote_size.1)),
             Edge::Left => (
                 self.remote_size.0 - 1,
                 scaled_y(local_y, self.win_size.1, self.remote_size.1),
             ),
         };
+        self.return_push = 0;
         self.send_input(InputEvent::MouseEnter {
-            x: entry_pos.0,
-            y: entry_pos.1,
+            x: self.remote_pos.0,
+            y: self.remote_pos.1,
         });
         self.lock_cursor_to_anchor();
         eprintln!(
             "entered macOS control at {},{}; press Scroll Lock to release",
-            entry_pos.0, entry_pos.1
+            self.remote_pos.0, self.remote_pos.1
         );
     }
 
@@ -691,6 +704,7 @@ impl CaptureState {
             });
         }
         self.active = false;
+        self.return_push = 0;
         unlock_cursor();
         let x = match self.edge {
             Edge::Right => self.win_size.0.saturating_sub(2),
@@ -707,6 +721,26 @@ impl CaptureState {
             Edge::Right => x >= self.win_size.0.saturating_sub(EDGE_TRIGGER_MARGIN),
             Edge::Left => x <= EDGE_TRIGGER_MARGIN,
         }
+    }
+
+    fn should_release_to_windows(&mut self, dx: i32) -> bool {
+        let pushing_out = match self.edge {
+            Edge::Right => dx < 0,
+            Edge::Left => dx > 0,
+        };
+        let at_return_edge = match self.edge {
+            Edge::Right => self.remote_pos.0 <= RETURN_EDGE_MARGIN,
+            Edge::Left => {
+                self.remote_pos.0 >= self.remote_size.0.saturating_sub(1 + RETURN_EDGE_MARGIN)
+            }
+        };
+        if !pushing_out || !at_return_edge {
+            self.return_push = 0;
+            return false;
+        }
+
+        self.return_push += dx.abs();
+        self.return_push >= RETURN_PUSH_THRESHOLD
     }
 
     fn anchor(&self) -> (i32, i32) {

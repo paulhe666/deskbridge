@@ -97,7 +97,13 @@ impl InputSink {
             return Ok(());
         }
 
-        self.update_shift_tap_state(scancode, state);
+        if self.handle_shift_tap(scancode, state)? {
+            return Ok(());
+        }
+        if matches!(state, KeyState::Down | KeyState::Repeat) {
+            self.flush_pending_shift_modifier()?;
+        }
+
         let Some(keycode) = scancode_to_macos_key(scancode) else {
             return Ok(());
         };
@@ -110,10 +116,6 @@ impl InputSink {
             KeyState::Up => {
                 self.pressed_keys.remove(&keycode);
                 self.post_key(keycode, false)?;
-                if is_shift_scancode(scancode) && self.shift_tap_candidate == Some(scancode) {
-                    self.shift_tap_candidate = None;
-                    self.toggle_input_source()?;
-                }
             }
             KeyState::Repeat => {
                 if self.pressed_keys.contains(&keycode) {
@@ -127,16 +129,36 @@ impl InputSink {
         Ok(())
     }
 
-    fn update_shift_tap_state(&mut self, scancode: u16, state: KeyState) {
-        if is_shift_scancode(scancode) {
-            if state == KeyState::Down {
+    fn handle_shift_tap(&mut self, scancode: u16, state: KeyState) -> std::io::Result<bool> {
+        if !is_shift_scancode(scancode) {
+            return Ok(false);
+        }
+
+        match state {
+            KeyState::Down => {
                 self.shift_tap_candidate = Some(scancode);
+                Ok(true)
             }
-            return;
+            KeyState::Repeat => Ok(self.shift_tap_candidate == Some(scancode)),
+            KeyState::Up if self.shift_tap_candidate == Some(scancode) => {
+                self.shift_tap_candidate = None;
+                self.toggle_input_source()?;
+                Ok(true)
+            }
+            KeyState::Up => Ok(false),
         }
-        if matches!(state, KeyState::Down | KeyState::Repeat) {
-            self.shift_tap_candidate = None;
+    }
+
+    fn flush_pending_shift_modifier(&mut self) -> std::io::Result<()> {
+        let Some(scancode) = self.shift_tap_candidate.take() else {
+            return Ok(());
+        };
+        if let Some(keycode) = scancode_to_macos_key(scancode) {
+            if self.pressed_keys.insert(keycode) {
+                self.post_key(keycode, true)?;
+            }
         }
+        Ok(())
     }
 
     fn screenshot_hotkey(&self) -> std::io::Result<()> {
