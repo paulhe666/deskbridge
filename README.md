@@ -69,11 +69,11 @@ copy/paste, the GUI drop zone, and the Windows edge drop strip.
 Outputs:
 
 - `dist/macos/Deskbridge.app`
-- `dist/macos/Deskbridge-0.1.0.pkg`
+- `dist/macos/Deskbridge-1.0.1.pkg`
 - `dist/macos/Deskbridge-macOS-app.zip`
 - `dist/macos/Uninstall Deskbridge.command`
 
-Install by opening `Deskbridge-0.1.0.pkg`, or copy `Deskbridge.app` to
+Install by opening `Deskbridge-1.0.1.pkg`, or copy `Deskbridge.app` to
 `/Applications`.
 
 ### Windows
@@ -85,7 +85,7 @@ Install by opening `Deskbridge-0.1.0.pkg`, or copy `Deskbridge.app` to
 The installer is written to:
 
 ```text
-dist\windows\Deskbridge-Setup-0.1.0.exe
+dist\windows\Deskbridge-Setup-1.0.1.exe
 ```
 
 The installer creates a normal uninstall entry. You can also run:
@@ -292,11 +292,11 @@ Windows 边缘投递条。
 输出：
 
 - `dist/macos/Deskbridge.app`
-- `dist/macos/Deskbridge-0.1.0.pkg`
+- `dist/macos/Deskbridge-1.0.1.pkg`
 - `dist/macos/Deskbridge-macOS-app.zip`
 - `dist/macos/Uninstall Deskbridge.command`
 
-可以打开 `Deskbridge-0.1.0.pkg` 安装，也可以把 `Deskbridge.app` 复制到
+可以打开 `Deskbridge-1.0.1.pkg` 安装，也可以把 `Deskbridge.app` 复制到
 `/Applications`。
 
 ### Windows
@@ -308,7 +308,7 @@ Windows 边缘投递条。
 安装器输出到：
 
 ```text
-dist\windows\Deskbridge-Setup-0.1.0.exe
+dist\windows\Deskbridge-Setup-1.0.1.exe
 ```
 
 安装器会创建正常的卸载项，也可以运行：

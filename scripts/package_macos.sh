@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist/macos"
+VERSION="$(awk -F '"' '/^version = / { print $2; exit }' "$ROOT/Cargo.toml")"
 
 cd "$ROOT"
 cargo build --release
@@ -40,9 +41,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIconFile</key>
   <string>Deskbridge</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>__VERSION__</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>__VERSION__</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
   <key>NSHighResolutionCapable</key>
@@ -50,6 +51,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+perl -0pi -e "s/__VERSION__/$VERSION/g" "$APP/Contents/Info.plist"
 
 cat > "$DIST/Uninstall Deskbridge.command" <<'UNINSTALL'
 #!/usr/bin/env bash
@@ -66,8 +68,8 @@ if command -v pkgbuild >/dev/null 2>&1; then
     --component "$APP" \
     --install-location /Applications \
     --identifier local.deskbridge.app \
-    --version 0.1.0 \
-    "$DIST/Deskbridge-0.1.0.pkg"
+    --version "$VERSION" \
+    "$DIST/Deskbridge-$VERSION.pkg"
 fi
 
 ditto -c -k --keepParent "$APP" "$DIST/Deskbridge-macOS-app.zip"
