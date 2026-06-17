@@ -734,6 +734,7 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
  "eframe",
+ "image",
  "windows-sys 0.59.0",
 ]
 
@@ -1500,6 +1501,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

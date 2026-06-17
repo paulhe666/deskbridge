@@ -18,10 +18,13 @@ impl ClipboardApi for Clipboard {
         if let Some(files) = read_files()? {
             return Ok(Some(ClipboardPayload::Files(files)));
         }
+        if let Some(text) = read_text()? {
+            return Ok(Some(ClipboardPayload::Text(text)));
+        }
         if let Some(bitmap) = read_bitmap()? {
             return Ok(Some(ClipboardPayload::Bitmap(bitmap)));
         }
-        read_text().map(|text| text.map(ClipboardPayload::Text))
+        Ok(None)
     }
 
     fn write(&mut self, payload: &ClipboardPayload) -> std::io::Result<()> {
@@ -34,13 +37,30 @@ impl ClipboardApi for Clipboard {
 }
 
 fn read_text() -> std::io::Result<Option<String>> {
-    let output = Command::new("pbpaste").args(["-Prefer", "txt"]).output()?;
+    let script = r#"ObjC.import("AppKit");
+ObjC.import("Foundation");
+function exists(value) { return value !== undefined && value !== null && !(value.isNil && value.isNil()); }
+const pasteboard = $.NSPasteboard.generalPasteboard;
+for (const type of ["public.utf8-plain-text", "NSStringPboardType", "public.utf16-plain-text"]) {
+  const value = pasteboard.stringForType(type);
+  if (exists(value)) {
+    const text = ObjC.unwrap(value);
+    if (text.length > 0) {
+      const data = $.NSString.alloc.initWithUTF8String(text).dataUsingEncoding($.NSUTF8StringEncoding);
+      $.NSFileHandle.fileHandleWithStandardOutput.writeData(data);
+      break;
+    }
+  }
+}
+"#;
+    let output = Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", script])
+        .output()?;
     if !output.status.success() || output.stdout.is_empty() {
         return Ok(None);
     }
-    let Ok(text) = String::from_utf8(output.stdout) else {
-        return Ok(None);
-    };
+    let text = String::from_utf8(output.stdout)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     Ok(Some(text.replace("\r\n", "\n").replace('\r', "\n")))
 }
 
@@ -52,27 +72,33 @@ fn read_bitmap() -> std::io::Result<Option<Vec<u8>>> {
     let script = r#"ObjC.import("AppKit");
 ObjC.import("Foundation");
 function exists(value) { return value !== undefined && value !== null && !(value.isNil && value.isNil()); }
-function bmpDataFromImage(image) {
+function pngDataFromImage(image) {
   if (!exists(image) || !image.isValid) return null;
   const tiff = image.TIFFRepresentation;
   if (!exists(tiff)) return null;
   const rep = $.NSBitmapImageRep.imageRepWithData(tiff);
   if (!exists(rep)) return null;
-  return rep.representationUsingTypeProperties(1, $({}));
+  return rep.representationUsingTypeProperties(4, $({}));
 }
-function bmpDataFromPasteboardData(data) {
+function pngDataFromPasteboardData(data) {
   if (!exists(data)) return null;
   const image = $.NSImage.alloc.initWithData(data);
-  return bmpDataFromImage(image);
+  return pngDataFromImage(image);
+}
+function hasType(types, expected) {
+  for (let i = 0; types && !types.isNil() && i < types.count; i++) {
+    if (ObjC.unwrap(types.objectAtIndex(i)) === expected) return true;
+  }
+  return false;
 }
 const pasteboard = $.NSPasteboard.generalPasteboard;
+const availableTypes = pasteboard.types;
+const imageTypes = ["public.png", "public.tiff", "public.jpeg", "public.heic", "com.microsoft.bmp", "public.bmp", "com.apple.pict"];
 let out = null;
-for (const type of ["public.png", "public.tiff", "public.jpeg", "public.heic", "com.microsoft.bmp", "public.bmp", "com.apple.pict"]) {
-  out = bmpDataFromPasteboardData(pasteboard.dataForType(type));
+for (const type of imageTypes) {
+  if (!hasType(availableTypes, type)) continue;
+  out = pngDataFromPasteboardData(pasteboard.dataForType(type));
   if (exists(out)) break;
-}
-if (!exists(out)) {
-  out = bmpDataFromImage($.NSImage.alloc.initWithPasteboard(pasteboard));
 }
 if (exists(out)) $.NSFileHandle.fileHandleWithStandardOutput.writeData(out);
 "#;

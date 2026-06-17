@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -8,7 +9,7 @@ use std::{ptr, slice};
 use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, POINT};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    SetClipboardData,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{
     GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
@@ -160,8 +161,14 @@ fn read_bitmap() -> std::io::Result<Option<Vec<u8>>> {
 }
 
 fn write_bitmap(bitmap: &[u8]) -> std::io::Result<()> {
-    let dib = bmp_to_dib(bitmap)?;
-    set_clipboard_bytes(CF_DIB as u32, &dib)
+    let dib = image_to_dib(bitmap).or_else(|_| bmp_to_dib(bitmap))?;
+    set_clipboard_bytes(CF_DIB as u32, &dib)?;
+    if let Ok(png) = image_to_png(bitmap) {
+        if let Some(format) = registered_clipboard_format("PNG") {
+            let _ = set_clipboard_bytes(format, &png);
+        }
+    }
+    Ok(())
 }
 
 fn read_files() -> std::io::Result<Option<Vec<PathBuf>>> {
@@ -318,6 +325,61 @@ fn bmp_to_dib(bitmap: &[u8]) -> std::io::Result<Vec<u8>> {
     }
 }
 
+fn image_to_dib(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    let image = image::load_from_memory(bytes).map_err(invalid_image)?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
+        return Err(invalid_data("invalid image dimensions"));
+    }
+
+    let pixel_len = width as usize * height as usize * 4;
+    let mut dib = Vec::with_capacity(40 + pixel_len);
+    dib.extend_from_slice(&40u32.to_le_bytes());
+    dib.extend_from_slice(&(width as i32).to_le_bytes());
+    dib.extend_from_slice(&(height as i32).to_le_bytes());
+    dib.extend_from_slice(&1u16.to_le_bytes());
+    dib.extend_from_slice(&32u16.to_le_bytes());
+    dib.extend_from_slice(&BI_RGB.to_le_bytes());
+    dib.extend_from_slice(&(pixel_len as u32).to_le_bytes());
+    dib.extend_from_slice(&0i32.to_le_bytes());
+    dib.extend_from_slice(&0i32.to_le_bytes());
+    dib.extend_from_slice(&0u32.to_le_bytes());
+    dib.extend_from_slice(&0u32.to_le_bytes());
+
+    let raw = rgba.as_raw();
+    let row_len = width as usize * 4;
+    for y in (0..height as usize).rev() {
+        let row = &raw[y * row_len..(y + 1) * row_len];
+        for pixel in row.chunks_exact(4) {
+            dib.push(pixel[2]);
+            dib.push(pixel[1]);
+            dib.push(pixel[0]);
+            dib.push(pixel[3]);
+        }
+    }
+    Ok(dib)
+}
+
+fn image_to_png(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Ok(bytes.to_vec());
+    }
+    let image = image::load_from_memory(bytes).map_err(invalid_image)?;
+    let mut cursor = Cursor::new(Vec::new());
+    image
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .map_err(invalid_image)?;
+    Ok(cursor.into_inner())
+}
+
+fn registered_clipboard_format(name: &str) -> Option<u32> {
+    let mut wide = name.encode_utf16().collect::<Vec<_>>();
+    wide.push(0);
+    let format = unsafe { RegisterClipboardFormatW(wide.as_ptr()) };
+    (format != 0).then_some(format)
+}
+
 fn dib_pixel_offset(dib: &[u8]) -> std::io::Result<usize> {
     if dib.len() < 4 {
         return Err(invalid_data("short DIB header"));
@@ -355,6 +417,10 @@ fn dib_pixel_offset(dib: &[u8]) -> std::io::Result<usize> {
 
 fn invalid_data(message: &str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
+fn invalid_image(error: image::ImageError) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, error)
 }
 
 fn last_os_error(context: &str) -> std::io::Error {
