@@ -35,7 +35,9 @@ const PRINT_SCREEN_SCANCODE: u16 = 311;
 const CAPS_LOCK_SCANCODE: u16 = 58;
 const LEFT_SHIFT_SCANCODE: u16 = 42;
 const RIGHT_SHIFT_SCANCODE: u16 = 54;
-const BACKSPACE_REPEAT_INTERVAL: Duration = Duration::from_millis(90);
+const BACKSPACE_INITIAL_REPEAT_INTERVAL: Duration = Duration::from_millis(60);
+const BACKSPACE_ACCEL_REPEAT_INTERVAL: Duration = Duration::from_millis(45);
+const BACKSPACE_ACCEL_DELAY: Duration = Duration::from_secs(3);
 const DEFAULT_SCROLL_FRAME_MS: u64 = 8;
 const DEFAULT_SCROLL_SCALE: f64 = 1.25;
 const DEFAULT_SCROLL_RESPONSE: f64 = 0.34;
@@ -61,6 +63,7 @@ pub struct InputSink {
     scroll: SmoothScroller,
     shift_tap_candidate: Option<u16>,
     last_backspace_repeat: Option<Instant>,
+    backspace_down_since: Option<Instant>,
 }
 
 impl InputSink {
@@ -83,6 +86,7 @@ impl InputSink {
             scroll: SmoothScroller::spawn(),
             shift_tap_candidate: None,
             last_backspace_repeat: None,
+            backspace_down_since: None,
         })
     }
 
@@ -126,7 +130,9 @@ impl InputSink {
         match state {
             KeyState::Down => {
                 if keycode == BACKSPACE_KEYCODE {
-                    self.last_backspace_repeat = Some(Instant::now());
+                    let now = Instant::now();
+                    self.last_backspace_repeat = Some(now);
+                    self.backspace_down_since = Some(now);
                 }
                 if self.pressed_keys.insert(keycode) {
                     self.post_key(keycode, true)?;
@@ -135,6 +141,7 @@ impl InputSink {
             KeyState::Up => {
                 if keycode == BACKSPACE_KEYCODE {
                     self.last_backspace_repeat = None;
+                    self.backspace_down_since = None;
                 }
                 self.pressed_keys.remove(&keycode);
                 self.post_key(keycode, false)?;
@@ -156,9 +163,18 @@ impl InputSink {
 
     fn backspace_repeat_due(&mut self) -> bool {
         let now = Instant::now();
+        let held_for = self
+            .backspace_down_since
+            .map(|start| now.saturating_duration_since(start))
+            .unwrap_or_default();
+        let interval = if held_for >= BACKSPACE_ACCEL_DELAY {
+            BACKSPACE_ACCEL_REPEAT_INTERVAL
+        } else {
+            BACKSPACE_INITIAL_REPEAT_INTERVAL
+        };
         if self
             .last_backspace_repeat
-            .map(|last| now.saturating_duration_since(last) < BACKSPACE_REPEAT_INTERVAL)
+            .map(|last| now.saturating_duration_since(last) < interval)
             .unwrap_or(false)
         {
             return false;

@@ -224,7 +224,6 @@ fn spawn_clipboard_watcher(writer: SharedWriter, clipboard_state: Arc<Mutex<Clip
                     continue;
                 }
             };
-            eprintln!("local clipboard changed {}", clipboard_summary(&payload));
             let encoded = protocol::encode_clipboard(&payload);
             if !clipboard_state
                 .lock()
@@ -233,6 +232,7 @@ fn spawn_clipboard_watcher(writer: SharedWriter, clipboard_state: Arc<Mutex<Clip
             {
                 continue;
             }
+            eprintln!("local clipboard changed {}", clipboard_summary(&payload));
             if let Err(e) = send_clipboard_payload(&writer, &payload) {
                 eprintln!("clipboard send failed: {e}");
             } else {
