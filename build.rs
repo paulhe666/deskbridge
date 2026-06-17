@@ -5,6 +5,13 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=assets/deskbridge.ico");
     println!("cargo:rerun-if-changed=packaging/windows/deskbridge.rc");
+    println!("cargo:rerun-if-changed=src/input/macos_native.c");
+    println!("cargo:rerun-if-changed=src/input/macos_native.h");
+
+    if env::var_os("CARGO_CFG_TARGET_OS").as_deref() == Some(std::ffi::OsStr::new("macos")) {
+        build_macos_native();
+        return;
+    }
 
     if env::var_os("CARGO_CFG_WINDOWS").is_none() {
         return;
@@ -48,4 +55,14 @@ fn find_tool(candidates: &'static [&'static str]) -> Option<&'static str> {
             .map(|status| status.success() || status.code().is_some())
             .unwrap_or(false)
     })
+}
+
+fn build_macos_native() {
+    cc::Build::new()
+        .file("src/input/macos_native.c")
+        .warnings(true)
+        .compile("deskbridge_macos_native");
+
+    println!("cargo:rustc-link-lib=framework=ApplicationServices");
+    println!("cargo:rustc-link-lib=framework=IOKit");
 }

@@ -203,6 +203,20 @@ Deskbridge coalesces high-frequency mouse and wheel deltas and keeps keyboard an
 button events immediate. File transfer chunks are intentionally modest so large
 clipboard/file transfers do not monopolize the input stream for too long.
 
+On macOS, the input backend uses a small native C shim. It initializes
+`IOHIDManager` for HID device discovery/diagnostics, then posts synthetic input
+through the public CoreGraphics event APIs. The shim also disables the default
+local event suppression interval on its `CGEventSource` to reduce short pauses
+after synthetic events.
+
+The input coalescing window defaults to 1 ms. It can be tuned on both sides:
+
+```bash
+DESKBRIDGE_INPUT_FLUSH_MS=2 deskbridge client --server WINDOWS_IP:24920
+```
+
+Allowed values are clamped to 1-16 ms.
+
 ## License
 
 Deskbridge is licensed under the GNU General Public License v3.0. See
@@ -408,6 +422,19 @@ deskbridge client --server WINDOWS_IP:24920
 
 Deskbridge 会合并高频鼠标和滚轮 delta，并让键盘、鼠标按键事件立即发送。
 文件传输分块刻意保持较小，避免大文件剪贴板/文件传输长时间占用输入流。
+
+macOS 输入后端使用了一层很小的原生 C shim。它会用 `IOHIDManager` 做 HID
+设备发现和诊断，然后通过公开的 CoreGraphics 事件 API 发送合成输入。这个
+shim 还会把 `CGEventSource` 的默认本地事件抑制窗口设为 0，以减少合成事件后
+出现的短暂停顿。
+
+输入合并窗口默认是 1 ms，两端都可以通过环境变量调节：
+
+```bash
+DESKBRIDGE_INPUT_FLUSH_MS=2 deskbridge client --server WINDOWS_IP:24920
+```
+
+允许值会被限制在 1-16 ms。
 
 ## 许可证
 

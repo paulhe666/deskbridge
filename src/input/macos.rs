@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::env;
 use std::io::ErrorKind;
+use std::ops::{BitOr, BitOrAssign};
 use std::os::raw::c_uchar;
+use std::ptr::NonNull;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,15 +12,45 @@ use core_foundation::base::{Boolean, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::string::{CFString, CFStringRef};
-use core_graphics::display::CGDisplay;
-use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, EventField,
-    ScrollEventUnit,
-};
-use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-use core_graphics::geometry::CGPoint;
 
 use crate::protocol::{InputEvent, KeyState, MouseButton};
+
+#[repr(C)]
+struct DeskbridgeHidContext {
+    _private: [u8; 0],
+}
+
+unsafe extern "C" {
+    fn deskbridge_hid_context_create(
+        context: *mut *mut DeskbridgeHidContext,
+        keyboard_count: *mut usize,
+        mouse_count: *mut usize,
+    ) -> i32;
+    fn deskbridge_hid_context_destroy(context: *mut DeskbridgeHidContext);
+    fn deskbridge_hid_post_key(
+        context: *mut DeskbridgeHidContext,
+        keycode: u16,
+        down: bool,
+        flags: u64,
+        autorepeat: bool,
+    ) -> i32;
+    fn deskbridge_hid_post_mouse(
+        context: *mut DeskbridgeHidContext,
+        kind: u8,
+        button: u8,
+        x: f64,
+        y: f64,
+        click_count: i64,
+        dx: i32,
+        dy: i32,
+    ) -> i32;
+    fn deskbridge_hid_post_scroll(
+        context: *mut DeskbridgeHidContext,
+        horizontal: i32,
+        vertical: i32,
+    ) -> i32;
+    fn deskbridge_main_display_size(width: *mut u32, height: *mut u32);
+}
 
 const COMMAND_KEYCODE: u16 = 55;
 const RIGHT_COMMAND_KEYCODE: u16 = 54;
@@ -44,6 +76,160 @@ const DEFAULT_SCROLL_MAX_STEP: f64 = 96.0;
 const SCROLL_ACCEL_WINDOW: Duration = Duration::from_millis(85);
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
 const DOUBLE_CLICK_DISTANCE: f64 = 5.0;
+const NATIVE_MOUSE_MOVED: u8 = 1;
+const NATIVE_MOUSE_LEFT_DOWN: u8 = 2;
+const NATIVE_MOUSE_LEFT_UP: u8 = 3;
+const NATIVE_MOUSE_RIGHT_DOWN: u8 = 4;
+const NATIVE_MOUSE_RIGHT_UP: u8 = 5;
+const NATIVE_MOUSE_OTHER_DOWN: u8 = 6;
+const NATIVE_MOUSE_OTHER_UP: u8 = 7;
+const NATIVE_MOUSE_LEFT_DRAGGED: u8 = 8;
+const NATIVE_MOUSE_RIGHT_DRAGGED: u8 = 9;
+const NATIVE_MOUSE_OTHER_DRAGGED: u8 = 10;
+const NATIVE_BUTTON_LEFT: u8 = 0;
+const NATIVE_BUTTON_RIGHT: u8 = 1;
+const NATIVE_BUTTON_CENTER: u8 = 2;
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct EventFlags(u64);
+
+impl EventFlags {
+    const ALPHA_SHIFT: Self = Self(0x0001_0000);
+    const SHIFT: Self = Self(0x0002_0000);
+    const CONTROL: Self = Self(0x0004_0000);
+    const ALTERNATE: Self = Self(0x0008_0000);
+    const COMMAND: Self = Self(0x0010_0000);
+
+    fn empty() -> Self {
+        Self(0)
+    }
+
+    fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+
+    fn remove(&mut self, other: Self) {
+        self.0 &= !other.0;
+    }
+}
+
+impl BitOr for EventFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl BitOrAssign for EventFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+impl Point {
+    fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+}
+
+struct NativeInput {
+    context: NonNull<DeskbridgeHidContext>,
+    keyboard_count: usize,
+    mouse_count: usize,
+    hid_ready: bool,
+}
+
+impl NativeInput {
+    fn new() -> std::io::Result<Self> {
+        let mut context = std::ptr::null_mut();
+        let mut keyboard_count = 0usize;
+        let mut mouse_count = 0usize;
+        let status = unsafe {
+            deskbridge_hid_context_create(&mut context, &mut keyboard_count, &mut mouse_count)
+        };
+        let context = NonNull::new(context)
+            .ok_or_else(|| event_err("failed to create macOS native HID context"))?;
+        if status != 0 && status != 2 {
+            unsafe {
+                deskbridge_hid_context_destroy(context.as_ptr());
+            }
+            return Err(event_err("failed to initialize macOS native input"));
+        }
+        Ok(Self {
+            context,
+            keyboard_count,
+            mouse_count,
+            hid_ready: status == 0,
+        })
+    }
+
+    fn post_key(
+        &self,
+        keycode: u16,
+        down: bool,
+        flags: EventFlags,
+        autorepeat: bool,
+    ) -> std::io::Result<()> {
+        check_native_status(
+            unsafe {
+                deskbridge_hid_post_key(self.context.as_ptr(), keycode, down, flags.0, autorepeat)
+            },
+            "failed to post key event",
+        )
+    }
+
+    fn post_mouse(
+        &self,
+        kind: u8,
+        button: u8,
+        position: Point,
+        click_count: i64,
+        dx: i32,
+        dy: i32,
+    ) -> std::io::Result<()> {
+        check_native_status(
+            unsafe {
+                deskbridge_hid_post_mouse(
+                    self.context.as_ptr(),
+                    kind,
+                    button,
+                    position.x,
+                    position.y,
+                    click_count,
+                    dx,
+                    dy,
+                )
+            },
+            "failed to post mouse event",
+        )
+    }
+
+    fn post_scroll(&self, horizontal: i32, vertical: i32) -> std::io::Result<()> {
+        check_native_status(
+            unsafe { deskbridge_hid_post_scroll(self.context.as_ptr(), horizontal, vertical) },
+            "failed to post scroll event",
+        )
+    }
+}
+
+impl Drop for NativeInput {
+    fn drop(&mut self) {
+        unsafe {
+            deskbridge_hid_context_destroy(self.context.as_ptr());
+        }
+    }
+}
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -53,11 +239,11 @@ unsafe extern "C" {
 }
 
 pub struct InputSink {
-    source: CGEventSource,
+    native: NativeInput,
     pressed_keys: HashSet<u16>,
     mouse_buttons: MouseButtons,
     screen_size: (i32, i32),
-    mouse_position: CGPoint,
+    mouse_position: Point,
     click_tracker: ClickTracker,
     scroll: SmoothScroller,
     shift_tap_candidate: Option<u16>,
@@ -68,8 +254,17 @@ pub struct InputSink {
 
 impl InputSink {
     pub fn new() -> std::io::Result<Self> {
-        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
-            .map_err(|_| event_err("failed to create event source"))?;
+        let native = NativeInput::new()?;
+        if native.hid_ready {
+            eprintln!(
+                "macOS IOHIDManager ready ({} keyboard device(s), {} mouse device(s))",
+                native.keyboard_count, native.mouse_count
+            );
+        } else {
+            eprintln!(
+                "warning: macOS IOHIDManager device snapshot unavailable; using CGEvent posting only"
+            );
+        }
         if !accessibility_trusted() {
             eprintln!(
                 "warning: macOS Accessibility permission is not granted for this process; keyboard and mouse buttons may be ignored"
@@ -77,11 +272,11 @@ impl InputSink {
             request_accessibility_permission();
         }
         Ok(Self {
-            source,
+            native,
             pressed_keys: HashSet::new(),
             mouse_buttons: MouseButtons::default(),
             screen_size: screen_size_i32(),
-            mouse_position: CGPoint::new(0.0, 0.0),
+            mouse_position: Point::new(0.0, 0.0),
             click_tracker: ClickTracker::default(),
             scroll: SmoothScroller::spawn(),
             shift_tap_candidate: None,
@@ -217,9 +412,9 @@ impl InputSink {
     }
 
     fn screenshot_hotkey(&self) -> std::io::Result<()> {
-        let command = CGEventFlags::CGEventFlagCommand;
-        let command_control = CGEventFlags::CGEventFlagCommand | CGEventFlags::CGEventFlagControl;
-        let full_flags = command_control | CGEventFlags::CGEventFlagShift;
+        let command = EventFlags::COMMAND;
+        let command_control = EventFlags::COMMAND | EventFlags::CONTROL;
+        let full_flags = command_control | EventFlags::SHIFT;
         self.post_key_with_flags(COMMAND_KEYCODE, true, command)?;
         self.post_key_with_flags(CONTROL_KEYCODE, true, command_control)?;
         self.post_key_with_flags(LEFT_SHIFT_KEYCODE, true, full_flags)?;
@@ -227,15 +422,15 @@ impl InputSink {
         self.post_key_with_flags(NUMBER_4_KEYCODE, false, full_flags)?;
         self.post_key_with_flags(LEFT_SHIFT_KEYCODE, false, command_control)?;
         self.post_key_with_flags(CONTROL_KEYCODE, false, command)?;
-        self.post_key_with_flags(COMMAND_KEYCODE, false, CGEventFlags::empty())?;
+        self.post_key_with_flags(COMMAND_KEYCODE, false, EventFlags::empty())?;
         Ok(())
     }
 
     fn toggle_input_source(&self) -> std::io::Result<()> {
-        self.post_key_with_flags(CONTROL_KEYCODE, true, CGEventFlags::CGEventFlagControl)?;
-        self.post_key_with_flags(SPACE_KEYCODE, true, CGEventFlags::CGEventFlagControl)?;
-        self.post_key_with_flags(SPACE_KEYCODE, false, CGEventFlags::CGEventFlagControl)?;
-        self.post_key_with_flags(CONTROL_KEYCODE, false, CGEventFlags::empty())
+        self.post_key_with_flags(CONTROL_KEYCODE, true, EventFlags::CONTROL)?;
+        self.post_key_with_flags(SPACE_KEYCODE, true, EventFlags::CONTROL)?;
+        self.post_key_with_flags(SPACE_KEYCODE, false, EventFlags::CONTROL)?;
+        self.post_key_with_flags(CONTROL_KEYCODE, false, EventFlags::empty())
     }
 
     fn toggle_caps_lock(&mut self) {
@@ -250,18 +445,18 @@ impl InputSink {
         self.post_key_with_flags_and_repeat(keycode, true, self.flags_for_key(keycode), true)
     }
 
-    fn flags_for_key(&self, keycode: u16) -> CGEventFlags {
+    fn flags_for_key(&self, keycode: u16) -> EventFlags {
         let mut flags = flags_for_pressed_keys(&self.pressed_keys);
         if !self.caps_lock_active {
             return flags;
         }
 
-        flags |= CGEventFlags::CGEventFlagAlphaShift;
+        flags |= EventFlags::ALPHA_SHIFT;
         if is_letter_keycode(keycode) {
-            if flags.contains(CGEventFlags::CGEventFlagShift) {
-                flags.remove(CGEventFlags::CGEventFlagShift);
+            if flags.contains(EventFlags::SHIFT) {
+                flags.remove(EventFlags::SHIFT);
             } else {
-                flags |= CGEventFlags::CGEventFlagShift;
+                flags |= EventFlags::SHIFT;
             }
         }
         flags
@@ -271,7 +466,7 @@ impl InputSink {
         &self,
         keycode: u16,
         down: bool,
-        flags: CGEventFlags,
+        flags: EventFlags,
     ) -> std::io::Result<()> {
         self.post_key_with_flags_and_repeat(keycode, down, flags, false)
     }
@@ -280,15 +475,10 @@ impl InputSink {
         &self,
         keycode: u16,
         down: bool,
-        flags: CGEventFlags,
+        flags: EventFlags,
         autorepeat: bool,
     ) -> std::io::Result<()> {
-        let event = CGEvent::new_keyboard_event(self.source.clone(), keycode, down)
-            .map_err(|_| event_err("failed to create key event"))?;
-        event.set_flags(flags);
-        event.set_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT, i64::from(autorepeat));
-        event.post(CGEventTapLocation::HID);
-        Ok(())
+        self.native.post_key(keycode, down, flags, autorepeat)
     }
 
     fn mouse_enter(&mut self, x: i32, y: i32) -> std::io::Result<()> {
@@ -307,7 +497,7 @@ impl InputSink {
     fn set_mouse_position(&mut self, x: i32, y: i32) {
         let x = x.clamp(0, self.screen_size.0.saturating_sub(1));
         let y = y.clamp(0, self.screen_size.1.saturating_sub(1));
-        self.mouse_position = CGPoint::new(x as f64, y as f64);
+        self.mouse_position = Point::new(x as f64, y as f64);
     }
 
     fn post_pointer_motion(&self, dx: i32, dy: i32) -> std::io::Result<()> {
@@ -316,43 +506,37 @@ impl InputSink {
             return Ok(());
         }
 
-        self.post_mouse_event(CGEventType::MouseMoved, CGMouseButton::Left, 0, dx, dy)
+        self.post_mouse_event(NATIVE_MOUSE_MOVED, NATIVE_BUTTON_LEFT, 0, dx, dy)
     }
 
     fn post_mouse_event(
         &self,
-        event_type: CGEventType,
-        button: CGMouseButton,
+        event_type: u8,
+        button: u8,
         click_count: i64,
         dx: i32,
         dy: i32,
     ) -> std::io::Result<()> {
-        let event =
-            CGEvent::new_mouse_event(self.source.clone(), event_type, self.mouse_position, button)
-                .map_err(|_| event_err("failed to create mouse event"))?;
-        event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_count);
-        event.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_X, dx as i64);
-        event.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y, dy as i64);
-        event.post(CGEventTapLocation::HID);
-        Ok(())
+        self.native
+            .post_mouse(event_type, button, self.mouse_position, click_count, dx, dy)
     }
 
     fn mouse_button(&mut self, button: MouseButton, down: bool) -> std::io::Result<()> {
         let (button, down_ty, up_ty) = match button {
             MouseButton::Left => (
-                CGMouseButton::Left,
-                CGEventType::LeftMouseDown,
-                CGEventType::LeftMouseUp,
+                NATIVE_BUTTON_LEFT,
+                NATIVE_MOUSE_LEFT_DOWN,
+                NATIVE_MOUSE_LEFT_UP,
             ),
             MouseButton::Right => (
-                CGMouseButton::Right,
-                CGEventType::RightMouseDown,
-                CGEventType::RightMouseUp,
+                NATIVE_BUTTON_RIGHT,
+                NATIVE_MOUSE_RIGHT_DOWN,
+                NATIVE_MOUSE_RIGHT_UP,
             ),
             _ => (
-                CGMouseButton::Center,
-                CGEventType::OtherMouseDown,
-                CGEventType::OtherMouseUp,
+                NATIVE_BUTTON_CENTER,
+                NATIVE_MOUSE_OTHER_DOWN,
+                NATIVE_MOUSE_OTHER_UP,
             ),
         };
         self.mouse_buttons.set(button, down);
@@ -398,21 +582,21 @@ struct MouseButtons {
 }
 
 impl MouseButtons {
-    fn set(&mut self, button: CGMouseButton, down: bool) {
+    fn set(&mut self, button: u8, down: bool) {
         match button {
-            CGMouseButton::Left => self.left = down,
-            CGMouseButton::Right => self.right = down,
+            NATIVE_BUTTON_LEFT => self.left = down,
+            NATIVE_BUTTON_RIGHT => self.right = down,
             _ => self.other = down,
         }
     }
 
-    fn drag_event(&self) -> Option<(CGEventType, CGMouseButton)> {
+    fn drag_event(&self) -> Option<(u8, u8)> {
         if self.left {
-            Some((CGEventType::LeftMouseDragged, CGMouseButton::Left))
+            Some((NATIVE_MOUSE_LEFT_DRAGGED, NATIVE_BUTTON_LEFT))
         } else if self.right {
-            Some((CGEventType::RightMouseDragged, CGMouseButton::Right))
+            Some((NATIVE_MOUSE_RIGHT_DRAGGED, NATIVE_BUTTON_RIGHT))
         } else if self.other {
-            Some((CGEventType::OtherMouseDragged, CGMouseButton::Center))
+            Some((NATIVE_MOUSE_OTHER_DRAGGED, NATIVE_BUTTON_CENTER))
         } else {
             None
         }
@@ -427,13 +611,13 @@ struct ClickTracker {
 #[derive(Clone, Copy)]
 struct ClickRecord {
     button: u8,
-    position: CGPoint,
+    position: Point,
     at: Instant,
     count: i64,
 }
 
 impl ClickTracker {
-    fn click_count(&mut self, button: CGMouseButton, down: bool, position: CGPoint) -> i64 {
+    fn click_count(&mut self, button: u8, down: bool, position: Point) -> i64 {
         if down {
             let now = Instant::now();
             let count = self
@@ -442,7 +626,7 @@ impl ClickTracker {
                 .map(|last| (last.count + 1).min(2))
                 .unwrap_or(1);
             self.last = Some(ClickRecord {
-                button: mouse_button_id(button),
+                button,
                 position,
                 at: now,
                 count,
@@ -454,27 +638,14 @@ impl ClickTracker {
     }
 }
 
-fn same_click_sequence(
-    last: &ClickRecord,
-    button: CGMouseButton,
-    position: CGPoint,
-    now: Instant,
-) -> bool {
-    last.button == mouse_button_id(button)
+fn same_click_sequence(last: &ClickRecord, button: u8, position: Point, now: Instant) -> bool {
+    last.button == button
         && now.saturating_duration_since(last.at) <= DOUBLE_CLICK_WINDOW
         && distance_squared(last.position, position)
             <= DOUBLE_CLICK_DISTANCE * DOUBLE_CLICK_DISTANCE
 }
 
-fn mouse_button_id(button: CGMouseButton) -> u8 {
-    match button {
-        CGMouseButton::Left => 0,
-        CGMouseButton::Right => 1,
-        CGMouseButton::Center => 2,
-    }
-}
-
-fn distance_squared(a: CGPoint, b: CGPoint) -> f64 {
+fn distance_squared(a: Point, b: Point) -> f64 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
     dx * dx + dy * dy
@@ -533,10 +704,10 @@ impl ScrollConfig {
 }
 
 fn scroll_worker_loop(receiver: Receiver<ScrollDelta>, config: ScrollConfig) {
-    let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-        Ok(source) => source,
-        Err(_) => {
-            eprintln!("smooth scroll disabled: failed to create event source");
+    let native = match NativeInput::new() {
+        Ok(native) => native,
+        Err(e) => {
+            eprintln!("smooth scroll disabled: {e}");
             return;
         }
     };
@@ -574,14 +745,14 @@ fn scroll_worker_loop(receiver: Receiver<ScrollDelta>, config: ScrollConfig) {
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                emit_scroll_frame(&source, &config, &mut pending_h, &mut pending_v);
+                emit_scroll_frame(&native, &config, &mut pending_h, &mut pending_v);
                 last_emit = Instant::now();
             }
             Err(RecvTimeoutError::Disconnected) => return,
         }
 
         if last_emit.elapsed() >= config.frame_interval {
-            emit_scroll_frame(&source, &config, &mut pending_h, &mut pending_v);
+            emit_scroll_frame(&native, &config, &mut pending_h, &mut pending_v);
             last_emit = Instant::now();
         }
     }
@@ -612,7 +783,7 @@ fn scroll_boost(delta: Duration) -> f64 {
 }
 
 fn emit_scroll_frame(
-    source: &CGEventSource,
+    native: &NativeInput,
     config: &ScrollConfig,
     pending_h: &mut f64,
     pending_v: &mut f64,
@@ -622,7 +793,7 @@ fn emit_scroll_frame(
     if horizontal == 0 && vertical == 0 {
         return;
     }
-    if let Err(e) = post_scroll(source, horizontal, vertical) {
+    if let Err(e) = native.post_scroll(horizontal, vertical) {
         eprintln!("scroll post failed: {e}");
     }
 }
@@ -643,29 +814,6 @@ fn take_scroll_step(value: &mut f64, config: &ScrollConfig) -> i32 {
     }
     *value -= rounded as f64;
     rounded
-}
-
-fn post_scroll(source: &CGEventSource, horizontal: i32, vertical: i32) -> std::io::Result<()> {
-    let event = CGEvent::new_scroll_event(
-        source.clone(),
-        ScrollEventUnit::PIXEL,
-        2,
-        vertical,
-        horizontal,
-        0,
-    )
-    .map_err(|_| event_err("failed to create scroll event"))?;
-    event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS, 1);
-    event.set_integer_value_field(
-        EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1,
-        vertical as i64,
-    );
-    event.set_integer_value_field(
-        EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_2,
-        horizontal as i64,
-    );
-    event.post(CGEventTapLocation::HID);
-    Ok(())
 }
 
 fn env_f64(name: &str, default: f64) -> f64 {
@@ -810,21 +958,32 @@ fn scancode_to_macos_key(scancode: u16) -> Option<u16> {
     })
 }
 
-fn flags_for_pressed_keys(keys: &HashSet<u16>) -> CGEventFlags {
-    let mut flags = CGEventFlags::empty();
+fn flags_for_pressed_keys(keys: &HashSet<u16>) -> EventFlags {
+    let mut flags = EventFlags::empty();
     if keys.contains(&COMMAND_KEYCODE) || keys.contains(&RIGHT_COMMAND_KEYCODE) {
-        flags |= CGEventFlags::CGEventFlagCommand;
+        flags |= EventFlags::COMMAND;
     }
     if keys.contains(&CONTROL_KEYCODE) {
-        flags |= CGEventFlags::CGEventFlagControl;
+        flags |= EventFlags::CONTROL;
     }
     if keys.contains(&OPTION_KEYCODE) || keys.contains(&RIGHT_OPTION_KEYCODE) {
-        flags |= CGEventFlags::CGEventFlagAlternate;
+        flags |= EventFlags::ALTERNATE;
     }
     if keys.contains(&LEFT_SHIFT_KEYCODE) || keys.contains(&RIGHT_SHIFT_KEYCODE) {
-        flags |= CGEventFlags::CGEventFlagShift;
+        flags |= EventFlags::SHIFT;
     }
     flags
+}
+
+fn check_native_status(status: i32, message: &str) -> std::io::Result<()> {
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            ErrorKind::Other,
+            format!("{message} (native status {status})"),
+        ))
+    }
 }
 
 fn event_err(message: &str) -> std::io::Error {
@@ -832,8 +991,12 @@ fn event_err(message: &str) -> std::io::Error {
 }
 
 pub fn screen_size() -> (u32, u32) {
-    let display = CGDisplay::main();
-    (display.pixels_wide() as u32, display.pixels_high() as u32)
+    let mut width = 0u32;
+    let mut height = 0u32;
+    unsafe {
+        deskbridge_main_display_size(&mut width, &mut height);
+    }
+    (width.max(1), height.max(1))
 }
 
 fn screen_size_i32() -> (i32, i32) {

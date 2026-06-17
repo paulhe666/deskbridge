@@ -1,6 +1,6 @@
 use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,7 +11,7 @@ use crate::protocol::{self, ClipboardPayload, Frame, FrameKind, InputEvent};
 use crate::transport::SharedWriter;
 
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
-const INPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(2);
+const DEFAULT_INPUT_FLUSH_MS: u64 = 1;
 
 pub fn run(server: &str) -> std::io::Result<()> {
     eprintln!("initializing macOS input sink");
@@ -207,17 +207,29 @@ fn drain_queued_input(
 fn input_flush_timeout(pending_since: Option<Instant>) -> Duration {
     pending_since
         .map(|since| {
-            INPUT_FLUSH_INTERVAL
+            input_flush_interval()
                 .checked_sub(since.elapsed())
                 .unwrap_or(Duration::ZERO)
         })
-        .unwrap_or(INPUT_FLUSH_INTERVAL)
+        .unwrap_or_else(input_flush_interval)
 }
 
 fn pending_ready(pending_since: Option<Instant>) -> bool {
     pending_since
-        .map(|since| since.elapsed() >= INPUT_FLUSH_INTERVAL)
+        .map(|since| since.elapsed() >= input_flush_interval())
         .unwrap_or(false)
+}
+
+fn input_flush_interval() -> Duration {
+    static INTERVAL: OnceLock<Duration> = OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        let ms = std::env::var("DESKBRIDGE_INPUT_FLUSH_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_INPUT_FLUSH_MS)
+            .clamp(1, 16);
+        Duration::from_millis(ms)
+    })
 }
 
 fn flush_pending_input(
