@@ -74,7 +74,8 @@ pub enum MouseButton {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
     Key { scancode: u16, state: KeyState },
-    MouseMove { x: i32, y: i32 },
+    MouseEnter { x: i32, y: i32 },
+    MouseDelta { dx: i32, dy: i32 },
     MouseButton { button: MouseButton, down: bool },
     MouseWheel { horizontal: i16, vertical: i16 },
 }
@@ -147,7 +148,7 @@ pub fn encode_input(event: &InputEvent) -> Vec<u8> {
                 KeyState::Repeat => 3,
             });
         }
-        InputEvent::MouseMove { x, y } => {
+        InputEvent::MouseEnter { x, y } => {
             payload.push(2);
             payload.extend_from_slice(&x.to_be_bytes());
             payload.extend_from_slice(&y.to_be_bytes());
@@ -169,6 +170,11 @@ pub fn encode_input(event: &InputEvent) -> Vec<u8> {
             payload.push(4);
             payload.extend_from_slice(&horizontal.to_be_bytes());
             payload.extend_from_slice(&vertical.to_be_bytes());
+        }
+        InputEvent::MouseDelta { dx, dy } => {
+            payload.push(5);
+            payload.extend_from_slice(&dx.to_be_bytes());
+            payload.extend_from_slice(&dy.to_be_bytes());
         }
     }
     payload
@@ -194,11 +200,11 @@ pub fn decode_input(payload: &[u8]) -> std::io::Result<InputEvent> {
         }
         2 => {
             if payload.len() != 9 {
-                return Err(invalid("invalid mouse move event"));
+                return Err(invalid("invalid mouse enter event"));
             }
             let x = i32::from_be_bytes(payload[1..5].try_into().unwrap());
             let y = i32::from_be_bytes(payload[5..9].try_into().unwrap());
-            Ok(InputEvent::MouseMove { x, y })
+            Ok(InputEvent::MouseEnter { x, y })
         }
         3 => {
             if payload.len() != 3 {
@@ -223,6 +229,14 @@ pub fn decode_input(payload: &[u8]) -> std::io::Result<InputEvent> {
                 horizontal: i16::from_be_bytes([payload[1], payload[2]]),
                 vertical: i16::from_be_bytes([payload[3], payload[4]]),
             })
+        }
+        5 => {
+            if payload.len() != 9 {
+                return Err(invalid("invalid mouse delta event"));
+            }
+            let dx = i32::from_be_bytes(payload[1..5].try_into().unwrap());
+            let dy = i32::from_be_bytes(payload[5..9].try_into().unwrap());
+            Ok(InputEvent::MouseDelta { dx, dy })
         }
         _ => Err(invalid("unknown input event kind")),
     }

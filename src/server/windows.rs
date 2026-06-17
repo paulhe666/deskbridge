@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SCROLL;
@@ -20,12 +20,12 @@ use windows_sys::Win32::UI::Input::{
 };
 use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    GetSystemMetrics, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP, LLMHF_INJECTED,
-    LWA_ALPHA, MSG, MSLLHOOKSTRUCT, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNA,
-    SetCursorPos, SetLayeredWindowAttributes, SetProcessDPIAware, SetWindowsHookExW, ShowWindow,
-    TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_DROPFILES, WM_INPUT,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetMessageW, GetSystemMetrics, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP,
+    LLMHF_INJECTED, LWA_ALPHA, MSG, MSLLHOOKSTRUCT, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN,
+    SW_SHOWNA, SetCursorPos, SetLayeredWindowAttributes, SetProcessDPIAware, SetWindowsHookExW,
+    ShowWindow, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_DROPFILES,
+    WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
     WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
     WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_EX_ACCEPTFILES, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, XBUTTON1, XBUTTON2,
@@ -46,7 +46,7 @@ const INPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 const DROP_STRIP_WIDTH: i32 = 18;
 const DROP_STRIP_ALPHA: u8 = 48;
 const EDGE_TRIGGER_MARGIN: i32 = 6;
-const RECENTER_MARGIN: i32 = 96;
+const CURSOR_LOCK_RADIUS: i32 = 2;
 
 static CAPTURE_STATE: OnceLock<Arc<Mutex<CaptureState>>> = OnceLock::new();
 static TRANSFER_WRITER: OnceLock<SharedWriter> = OnceLock::new();
@@ -116,6 +116,7 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
         eprintln!("file drop strip active on the {:?} edge", config.edge);
     }
     message_loop();
+    unlock_cursor();
     drop(hooks);
     drop(raw_input);
     drop(drop_strip);
@@ -557,10 +558,7 @@ struct CaptureState {
     edge: Edge,
     win_size: (i32, i32),
     remote_size: (i32, i32),
-    remote_pos: (i32, i32),
-    local_pos: (i32, i32),
     active: bool,
-    warping: bool,
     local_left_down: bool,
     pressed_keys: HashSet<u16>,
 }
@@ -572,10 +570,7 @@ impl CaptureState {
             edge,
             win_size: screen_size(),
             remote_size,
-            remote_pos: (0, 0),
-            local_pos: (0, 0),
             active: false,
-            warping: false,
             local_left_down: false,
             pressed_keys: HashSet::new(),
         }
@@ -641,14 +636,10 @@ impl CaptureState {
 
     fn handle_mouse_move(&mut self, hook: &MSLLHOOKSTRUCT) -> bool {
         if self.active {
-            if self.warping || (hook.flags & LLMHF_INJECTED) != 0 {
-                self.warping = false;
-                self.local_pos = self.anchor();
+            if (hook.flags & LLMHF_INJECTED) != 0 {
                 return true;
             }
-            if self.should_recenter_local_cursor((hook.pt.x, hook.pt.y)) {
-                self.warp_to_anchor();
-            }
+            self.lock_cursor_to_anchor();
             return true;
         }
 
@@ -667,38 +658,32 @@ impl CaptureState {
         if !self.active {
             return;
         }
-        self.remote_pos.0 = clamp(self.remote_pos.0 + dx, 0, self.remote_size.0 - 1);
-        self.remote_pos.1 = clamp(self.remote_pos.1 + dy, 0, self.remote_size.1 - 1);
-        self.send_input(InputEvent::MouseMove {
-            x: self.remote_pos.0,
-            y: self.remote_pos.1,
-        });
+        self.send_input(InputEvent::MouseDelta { dx, dy });
     }
 
     fn activate(&mut self, local_y: i32) {
         self.active = true;
         self.local_left_down = false;
         self.win_size = screen_size();
-        self.remote_pos = match self.edge {
+        let entry_pos = match self.edge {
             Edge::Right => (0, scaled_y(local_y, self.win_size.1, self.remote_size.1)),
             Edge::Left => (
                 self.remote_size.0 - 1,
                 scaled_y(local_y, self.win_size.1, self.remote_size.1),
             ),
         };
-        self.send_input(InputEvent::MouseMove {
-            x: self.remote_pos.0,
-            y: self.remote_pos.1,
+        self.send_input(InputEvent::MouseEnter {
+            x: entry_pos.0,
+            y: entry_pos.1,
         });
-        self.warp_to_anchor();
+        self.lock_cursor_to_anchor();
         eprintln!(
             "entered macOS control at {},{}; press Scroll Lock to release",
-            self.remote_pos.0, self.remote_pos.1
+            entry_pos.0, entry_pos.1
         );
     }
 
     fn deactivate(&mut self) {
-        let y = scaled_y(self.remote_pos.1, self.remote_size.1, self.win_size.1);
         for scancode in self.pressed_keys.drain().collect::<Vec<_>>() {
             self.send_input(InputEvent::Key {
                 scancode,
@@ -706,13 +691,13 @@ impl CaptureState {
             });
         }
         self.active = false;
-        self.warping = false;
+        unlock_cursor();
         let x = match self.edge {
             Edge::Right => self.win_size.0.saturating_sub(2),
             Edge::Left => 1,
         };
         unsafe {
-            SetCursorPos(x, clamp(y, 0, self.win_size.1.saturating_sub(1)));
+            SetCursorPos(x, self.win_size.1 / 2);
         }
         eprintln!("released control back to Windows");
     }
@@ -728,19 +713,17 @@ impl CaptureState {
         (self.win_size.0 / 2, self.win_size.1 / 2)
     }
 
-    fn should_recenter_local_cursor(&self, point: (i32, i32)) -> bool {
-        point.0 <= RECENTER_MARGIN
-            || point.1 <= RECENTER_MARGIN
-            || point.0 >= self.win_size.0.saturating_sub(RECENTER_MARGIN)
-            || point.1 >= self.win_size.1.saturating_sub(RECENTER_MARGIN)
-    }
-
-    fn warp_to_anchor(&mut self) {
+    fn lock_cursor_to_anchor(&self) {
         let anchor = self.anchor();
-        self.local_pos = anchor;
-        self.warping = true;
+        let rect = RECT {
+            left: anchor.0 - CURSOR_LOCK_RADIUS,
+            top: anchor.1 - CURSOR_LOCK_RADIUS,
+            right: anchor.0 + CURSOR_LOCK_RADIUS + 1,
+            bottom: anchor.1 + CURSOR_LOCK_RADIUS + 1,
+        };
         unsafe {
             SetCursorPos(anchor.0, anchor.1);
+            ClipCursor(&rect);
         }
     }
 
@@ -780,15 +763,16 @@ impl InputEmitter {
 }
 
 fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
-    let mut pending_move = None;
+    let mut pending_delta = (0i32, 0i32);
     let mut pending_wheel = (0i32, 0i32);
     let mut log = InputSendLog::default();
 
     loop {
         match receiver.recv_timeout(INPUT_FLUSH_INTERVAL) {
-            Ok(InputEvent::MouseMove { x, y }) => {
-                pending_move = Some((x, y));
-                flush_pending_input(&writer, &mut pending_move, &mut pending_wheel, &mut log);
+            Ok(InputEvent::MouseDelta { dx, dy }) => {
+                pending_delta.0 += dx;
+                pending_delta.1 += dy;
+                flush_pending_input(&writer, &mut pending_delta, &mut pending_wheel, &mut log);
             }
             Ok(InputEvent::MouseWheel {
                 horizontal,
@@ -798,11 +782,11 @@ fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
                 pending_wheel.1 += vertical as i32;
             }
             Ok(event) => {
-                flush_pending_input(&writer, &mut pending_move, &mut pending_wheel, &mut log);
+                flush_pending_input(&writer, &mut pending_delta, &mut pending_wheel, &mut log);
                 write_input_event(&writer, event, &mut log);
             }
             Err(RecvTimeoutError::Timeout) => {
-                flush_pending_input(&writer, &mut pending_move, &mut pending_wheel, &mut log);
+                flush_pending_input(&writer, &mut pending_delta, &mut pending_wheel, &mut log);
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -811,12 +795,20 @@ fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
 
 fn flush_pending_input(
     writer: &SharedWriter,
-    pending_move: &mut Option<(i32, i32)>,
+    pending_delta: &mut (i32, i32),
     pending_wheel: &mut (i32, i32),
     log: &mut InputSendLog,
 ) {
-    if let Some((x, y)) = pending_move.take() {
-        write_input_event(writer, InputEvent::MouseMove { x, y }, log);
+    if pending_delta.0 != 0 || pending_delta.1 != 0 {
+        write_input_event(
+            writer,
+            InputEvent::MouseDelta {
+                dx: pending_delta.0,
+                dy: pending_delta.1,
+            },
+            log,
+        );
+        *pending_delta = (0, 0);
     }
     if pending_wheel.0 != 0 || pending_wheel.1 != 0 {
         write_input_event(
@@ -912,6 +904,12 @@ fn screen_size() -> (i32, i32) {
     let width = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1);
     let height = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(1);
     (width, height)
+}
+
+fn unlock_cursor() {
+    unsafe {
+        ClipCursor(ptr::null());
+    }
 }
 
 fn drop_strip_enabled() -> bool {

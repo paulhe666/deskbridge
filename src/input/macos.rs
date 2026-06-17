@@ -43,6 +43,7 @@ pub struct InputSink {
     source: CGEventSource,
     pressed_keys: HashSet<u16>,
     mouse_buttons: MouseButtons,
+    screen_size: (i32, i32),
     mouse_position: CGPoint,
     scroll: SmoothScroller,
     shift_tap_candidate: Option<u16>,
@@ -61,6 +62,7 @@ impl InputSink {
             source,
             pressed_keys: HashSet::new(),
             mouse_buttons: MouseButtons::default(),
+            screen_size: screen_size_i32(),
             mouse_position: CGPoint::new(0.0, 0.0),
             scroll: SmoothScroller::spawn(),
             shift_tap_candidate: None,
@@ -70,7 +72,8 @@ impl InputSink {
     pub fn apply(&mut self, event: InputEvent) -> std::io::Result<()> {
         match event {
             InputEvent::Key { scancode, state } => self.key(scancode, state),
-            InputEvent::MouseMove { x, y } => self.mouse_move(x, y),
+            InputEvent::MouseEnter { x, y } => self.mouse_enter(x, y),
+            InputEvent::MouseDelta { dx, dy } => self.mouse_delta(dx, dy),
             InputEvent::MouseButton { button, down } => self.mouse_button(button, down),
             InputEvent::MouseWheel {
                 horizontal,
@@ -193,8 +196,26 @@ impl InputSink {
         Ok(())
     }
 
-    fn mouse_move(&mut self, x: i32, y: i32) -> std::io::Result<()> {
+    fn mouse_enter(&mut self, x: i32, y: i32) -> std::io::Result<()> {
+        self.screen_size = screen_size_i32();
+        self.set_mouse_position(x, y);
+        self.post_pointer_motion()
+    }
+
+    fn mouse_delta(&mut self, dx: i32, dy: i32) -> std::io::Result<()> {
+        let x = self.mouse_position.x as i32 + dx;
+        let y = self.mouse_position.y as i32 + dy;
+        self.set_mouse_position(x, y);
+        self.post_pointer_motion()
+    }
+
+    fn set_mouse_position(&mut self, x: i32, y: i32) {
+        let x = x.clamp(0, self.screen_size.0.saturating_sub(1));
+        let y = y.clamp(0, self.screen_size.1.saturating_sub(1));
         self.mouse_position = CGPoint::new(x as f64, y as f64);
+    }
+
+    fn post_pointer_motion(&self) -> std::io::Result<()> {
         if let Some((drag_ty, button)) = self.mouse_buttons.drag_event() {
             let _ = CGDisplay::warp_mouse_cursor_position(self.mouse_position);
             self.post_mouse_event(drag_ty, button)?;
@@ -598,4 +619,9 @@ fn event_err(message: &str) -> std::io::Error {
 pub fn screen_size() -> (u32, u32) {
     let display = CGDisplay::main();
     (display.pixels_wide() as u32, display.pixels_high() as u32)
+}
+
+fn screen_size_i32() -> (i32, i32) {
+    let (width, height) = screen_size();
+    (width.max(1) as i32, height.max(1) as i32)
 }
