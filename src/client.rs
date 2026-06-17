@@ -106,6 +106,7 @@ fn spawn_clipboard_watcher(writer: SharedWriter, clipboard_state: Arc<Mutex<Clip
                 return;
             }
         };
+        eprintln!("clipboard watcher active");
         loop {
             thread::sleep(Duration::from_millis(450));
             let payload = match clipboard.read() {
@@ -171,6 +172,7 @@ impl ClipboardSyncState {
 
         let kind = ClipboardKind::from_payload(payload);
         if self.should_suppress(kind) {
+            eprintln!("suppressed remote clipboard echo");
             self.last_observed = Some(encoded);
             return false;
         }

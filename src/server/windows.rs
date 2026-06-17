@@ -206,6 +206,7 @@ fn spawn_clipboard_watcher(writer: SharedWriter, clipboard_state: Arc<Mutex<Clip
                 return;
             }
         };
+        eprintln!("clipboard watcher active");
         let mut last_sequence = unsafe { GetClipboardSequenceNumber() };
         loop {
             thread::sleep(Duration::from_millis(350));
@@ -278,6 +279,7 @@ impl ClipboardSyncState {
 
         let kind = ClipboardKind::from_payload(payload);
         if self.should_suppress(kind) {
+            eprintln!("suppressed remote clipboard echo");
             self.last_observed = Some(encoded);
             return false;
         }
