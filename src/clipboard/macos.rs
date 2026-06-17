@@ -95,7 +95,23 @@ for (const type of ["public.utf8-plain-text", "NSStringPboardType", "public.utf1
 }
 
 fn write_text(text: &str) -> std::io::Result<()> {
-    write_filter("pbcopy", &[], text.as_bytes()).map(|_| ())
+    let script = r#"ObjC.import("AppKit");
+ObjC.import("Foundation");
+const data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
+const text = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
+if (!text || text.isNil()) throw new Error("invalid UTF-8 text");
+const pasteboard = $.NSPasteboard.generalPasteboard;
+pasteboard.clearContents;
+let wrote = pasteboard.setStringForType(text, "public.utf8-plain-text");
+wrote = pasteboard.setStringForType(text, "NSStringPboardType") || wrote;
+if (!wrote) throw new Error("set text failed");
+"#;
+    write_filter(
+        "osascript",
+        &["-l", "JavaScript", "-e", script],
+        text.as_bytes(),
+    )
+    .map(|_| ())
 }
 
 fn read_bitmap() -> std::io::Result<Option<Vec<u8>>> {
@@ -167,6 +183,13 @@ if (!wrote) throw new Error("set image data failed");
 }
 
 fn read_files() -> std::io::Result<Option<Vec<PathBuf>>> {
+    if let Some(files) = read_files_jxa()? {
+        return Ok(Some(files));
+    }
+    read_files_applescript()
+}
+
+fn read_files_jxa() -> std::io::Result<Option<Vec<PathBuf>>> {
     let script = r#"ObjC.import("AppKit");
 ObjC.import("Foundation");
 const pasteboard = $.NSPasteboard.generalPasteboard;
@@ -195,6 +218,8 @@ function emitFileUrl(value) {
   const url = $.NSURL.URLWithString(string);
   emitUrl(url);
 }
+emitFileUrl(pasteboard.stringForType("public.file-url"));
+emitFileUrl(pasteboard.stringForType("com.apple.pasteboard.promised-file-url"));
 const urls = pasteboard.readObjectsForClassesOptions($[$.NSURL.class], $({}));
 if (urls && !urls.isNil()) {
   for (let i = 0; i < urls.count; i++) {
@@ -218,6 +243,35 @@ if (items && !items.isNil()) {
     let output = Command::new("osascript")
         .args(["-l", "JavaScript", "-e", script])
         .output()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Ok(None);
+    }
+    let files = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .collect::<Vec<_>>();
+    if files.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(files))
+    }
+}
+
+fn read_files_applescript() -> std::io::Result<Option<Vec<PathBuf>>> {
+    let script = r#"try
+  set clipboardFiles to the clipboard as «class furl»
+  if class of clipboardFiles is list then
+    repeat with clipboardFile in clipboardFiles
+      POSIX path of clipboardFile
+    end repeat
+  else
+    POSIX path of clipboardFiles
+  end if
+on error
+end try
+"#;
+    let output = Command::new("osascript").args(["-e", script]).output()?;
     if !output.status.success() || output.stdout.is_empty() {
         return Ok(None);
     }
