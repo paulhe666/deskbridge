@@ -3,9 +3,17 @@
 Deskbridge is a Deskflow-like keyboard, mouse, clipboard, and file bridge for a
 Windows server and a macOS client.
 
+Deskbridge was created mainly to work around the macOS support gaps and
+compatibility issues encountered when using Deskflow-like workflows. The code
+therefore puts extra attention on macOS input injection, keyboard mapping,
+clipboard formats, wheel behavior, packaging, and permission handling.
+
 The project is experimental but usable for daily testing. It was developed with
 substantial assistance from OpenAI Codex for code generation, debugging,
 packaging, documentation, and iterative user testing.
+
+Because of macOS input compatibility limits, the mouse may still occasionally
+stutter or pause. This is a known issue and will be improved in later versions.
 
 ## Features
 
@@ -197,8 +205,8 @@ clipboard/file transfers do not monopolize the input stream for too long.
 
 ## License
 
-No license has been selected yet. Add one before accepting external
-contributions.
+Deskbridge is licensed under the GNU General Public License v3.0. See
+[`LICENSE`](LICENSE) for details.
 
 ---
 
@@ -207,8 +215,15 @@ contributions.
 Deskbridge 是一个类似 Deskflow 的跨设备工具，目标是让 Windows 作为服务端、
 macOS 作为客户端，实现键鼠共享、剪贴板同步和文件投递。
 
+本项目主要是为了解决 Deskflow 类工作流在 macOS 支持和兼容性上的不足，
+因此对 macOS 输入注入、键盘映射、剪贴板格式、滚轮行为、打包和权限处理做了
+较多优化。
+
 本项目仍然是实验性质，但已经可以用于日常测试。项目开发过程中大量使用了
 OpenAI Codex 辅助完成代码生成、调试、打包、文档编写和迭代测试。
+
+由于 macOS 输入兼容性本身存在限制，鼠标仍然可能出现偶发卡顿或短暂停顿。
+这是已知问题，将在后续版本继续优化。
 
 ## 功能
 
@@ -396,4 +411,5 @@ Deskbridge 会合并高频鼠标和滚轮 delta，并让键盘、鼠标按键事
 
 ## 许可证
 
-目前还没有选择许可证。接受外部贡献前建议先补充开源许可证。
+Deskbridge 使用 GNU General Public License v3.0 开源。详情见
+[`LICENSE`](LICENSE)。
