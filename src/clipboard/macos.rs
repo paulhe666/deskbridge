@@ -1,9 +1,21 @@
+use std::ffi::{c_char, c_void};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use crate::clipboard::ClipboardApi;
 use crate::protocol::ClipboardPayload;
+
+#[link(name = "AppKit", kind = "framework")]
+#[link(name = "objc")]
+unsafe extern "C" {
+    fn objc_getClass(name: *const c_char) -> ObjcId;
+    fn sel_registerName(name: *const c_char) -> ObjcSel;
+    fn objc_msgSend();
+}
+
+type ObjcId = *mut c_void;
+type ObjcSel = *mut c_void;
 
 pub struct Clipboard {
     last_change_count: Option<i64>,
@@ -53,17 +65,34 @@ impl ClipboardApi for Clipboard {
 }
 
 fn pasteboard_change_count() -> std::io::Result<Option<i64>> {
-    let script = r#"ObjC.import("AppKit");
-console.log($.NSPasteboard.generalPasteboard.changeCount);
-"#;
-    let output = Command::new("osascript")
-        .args(["-l", "JavaScript", "-e", script])
-        .output()?;
-    if !output.status.success() {
-        return Ok(None);
+    unsafe {
+        let class = objc_getClass(cstr(b"NSPasteboard\0"));
+        if class.is_null() {
+            return Ok(None);
+        }
+        let pasteboard = objc_send_id(class, sel_registerName(cstr(b"generalPasteboard\0")));
+        if pasteboard.is_null() {
+            return Ok(None);
+        }
+        let change_count = objc_send_isize(pasteboard, sel_registerName(cstr(b"changeCount\0")));
+        Ok(Some(change_count as i64))
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    Ok(text.trim().parse().ok())
+}
+
+fn cstr(bytes: &'static [u8]) -> *const c_char {
+    bytes.as_ptr().cast()
+}
+
+unsafe fn objc_send_id(receiver: ObjcId, selector: ObjcSel) -> ObjcId {
+    let send: unsafe extern "C" fn(ObjcId, ObjcSel) -> ObjcId =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe { send(receiver, selector) }
+}
+
+unsafe fn objc_send_isize(receiver: ObjcId, selector: ObjcSel) -> isize {
+    let send: unsafe extern "C" fn(ObjcId, ObjcSel) -> isize =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe { send(receiver, selector) }
 }
 
 fn read_text() -> std::io::Result<Option<String>> {

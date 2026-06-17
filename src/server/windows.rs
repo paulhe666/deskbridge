@@ -5,7 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,7 +42,7 @@ use crate::transport::SharedWriter;
 const DEFAULT_REMOTE_WIDTH: i32 = 1366;
 const DEFAULT_REMOTE_HEIGHT: i32 = 768;
 const WHEEL_PIXELS_PER_DETENT: i32 = 120;
-const INPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
+const INPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(2);
 const DROP_STRIP_WIDTH: i32 = 18;
 const DROP_STRIP_ALPHA: u8 = 48;
 const EDGE_TRIGGER_MARGIN: i32 = 6;
@@ -562,36 +562,22 @@ unsafe extern "system" fn raw_input_proc(
 }
 
 fn handle_raw_mouse_input(lparam: LPARAM) {
-    let mut size = 0u32;
     let header_size = size_of::<RAWINPUTHEADER>() as u32;
-    let query = unsafe {
-        GetRawInputData(
-            lparam as HRAWINPUT,
-            RID_INPUT,
-            ptr::null_mut(),
-            &mut size,
-            header_size,
-        )
-    };
-    if query == u32::MAX || size == 0 {
-        return;
-    }
-
-    let mut buffer = vec![0u8; size as usize];
+    let mut raw = unsafe { zeroed::<RAWINPUT>() };
+    let mut size = size_of::<RAWINPUT>() as u32;
     let read = unsafe {
         GetRawInputData(
             lparam as HRAWINPUT,
             RID_INPUT,
-            buffer.as_mut_ptr().cast(),
+            (&mut raw as *mut RAWINPUT).cast(),
             &mut size,
             header_size,
         )
     };
-    if read == u32::MAX || read != size {
+    if read == u32::MAX || read == 0 {
         return;
     }
 
-    let raw = unsafe { &*(buffer.as_ptr() as *const RAWINPUT) };
     if raw.header.dwType != RIM_TYPEMOUSE {
         return;
     }
@@ -853,7 +839,9 @@ impl CaptureState {
 
     fn recenter_cursor_if_needed(&self, hook: &MSLLHOOKSTRUCT) {
         let anchor = self.anchor();
-        if (hook.pt.x - anchor.0).abs() > 0 || (hook.pt.y - anchor.1).abs() > 0 {
+        if (hook.pt.x - anchor.0).abs() > CURSOR_LOCK_RADIUS
+            || (hook.pt.y - anchor.1).abs() > CURSOR_LOCK_RADIUS
+        {
             unsafe {
                 SetCursorPos(anchor.0, anchor.1);
             }
@@ -899,44 +887,25 @@ fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
     let mut pending_delta = (0i32, 0i32);
     let mut pending_wheel = (0i32, 0i32);
     let mut pending_since = None;
-    let mut log = InputSendLog::default();
+    let mut log = InputSendLog::new();
 
     loop {
         match receiver.recv_timeout(input_flush_timeout(pending_since)) {
-            Ok(InputEvent::MouseDelta { dx, dy }) => {
-                if pending_since.is_none() {
-                    pending_since = Some(Instant::now());
-                }
-                pending_delta.0 += dx;
-                pending_delta.1 += dy;
-                if pending_ready(pending_since) {
-                    flush_pending_input(
-                        &writer,
-                        &mut pending_delta,
-                        &mut pending_wheel,
-                        &mut pending_since,
-                        &mut log,
-                    );
-                }
-            }
-            Ok(InputEvent::MouseWheel {
-                horizontal,
-                vertical,
-            }) => {
-                if pending_since.is_none() {
-                    pending_since = Some(Instant::now());
-                }
-                pending_wheel.0 += horizontal as i32;
-                pending_wheel.1 += vertical as i32;
-                if pending_ready(pending_since) {
-                    flush_pending_input(
-                        &writer,
-                        &mut pending_delta,
-                        &mut pending_wheel,
-                        &mut pending_since,
-                        &mut log,
-                    );
-                }
+            Ok(event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. })) => {
+                queue_pending_input(
+                    event,
+                    &mut pending_delta,
+                    &mut pending_wheel,
+                    &mut pending_since,
+                );
+                drain_queued_input(
+                    &writer,
+                    &receiver,
+                    &mut pending_delta,
+                    &mut pending_wheel,
+                    &mut pending_since,
+                    &mut log,
+                );
             }
             Ok(event) => {
                 flush_pending_input(
@@ -959,6 +928,59 @@ fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
+    }
+}
+
+fn queue_pending_input(
+    event: InputEvent,
+    pending_delta: &mut (i32, i32),
+    pending_wheel: &mut (i32, i32),
+    pending_since: &mut Option<Instant>,
+) {
+    if pending_since.is_none() {
+        *pending_since = Some(Instant::now());
+    }
+    match event {
+        InputEvent::MouseDelta { dx, dy } => {
+            pending_delta.0 += dx;
+            pending_delta.1 += dy;
+        }
+        InputEvent::MouseWheel {
+            horizontal,
+            vertical,
+        } => {
+            pending_wheel.0 += horizontal as i32;
+            pending_wheel.1 += vertical as i32;
+        }
+        _ => {}
+    }
+}
+
+fn drain_queued_input(
+    writer: &SharedWriter,
+    receiver: &Receiver<InputEvent>,
+    pending_delta: &mut (i32, i32),
+    pending_wheel: &mut (i32, i32),
+    pending_since: &mut Option<Instant>,
+    log: &mut InputSendLog,
+) {
+    loop {
+        match receiver.try_recv() {
+            Ok(event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. })) => {
+                queue_pending_input(event, pending_delta, pending_wheel, pending_since);
+            }
+            Ok(event) => {
+                flush_pending_input(writer, pending_delta, pending_wheel, pending_since, log);
+                write_input_event(writer, event, log);
+                return;
+            }
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => return,
+        }
+    }
+
+    if pending_ready(*pending_since) {
+        flush_pending_input(writer, pending_delta, pending_wheel, pending_since, log);
     }
 }
 
@@ -1016,6 +1038,7 @@ fn flush_pending_input(
 }
 
 struct InputSendLog {
+    enabled: bool,
     count: u64,
     last_print: Instant,
 }
@@ -1023,8 +1046,18 @@ struct InputSendLog {
 impl Default for InputSendLog {
     fn default() -> Self {
         Self {
+            enabled: false,
             count: 0,
             last_print: Instant::now() - Duration::from_secs(2),
+        }
+    }
+}
+
+impl InputSendLog {
+    fn new() -> Self {
+        Self {
+            enabled: std::env::var_os("DESKBRIDGE_INPUT_LOG").is_some(),
+            ..Self::default()
         }
     }
 }
@@ -1036,6 +1069,9 @@ fn write_input_event(writer: &SharedWriter, event: InputEvent, log: &mut InputSe
         return;
     }
     log.count += 1;
+    if !log.enabled {
+        return;
+    }
     if log.count == 1 || log.last_print.elapsed() >= Duration::from_secs(1) {
         eprintln!("sent input event #{}: {:?}", log.count, event);
         log.last_print = Instant::now();

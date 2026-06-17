@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 pub const VERSION: u16 = 1;
-pub const CHUNK_SIZE: usize = 512 * 1024;
+pub const CHUNK_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

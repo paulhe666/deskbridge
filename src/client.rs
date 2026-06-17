@@ -32,7 +32,7 @@ pub fn run(server: &str) -> std::io::Result<()> {
     let mut incoming_files = file_transfer::IncomingBundle::new(receive_root);
     let clipboard_state = Arc::new(Mutex::new(ClipboardSyncState::default()));
     spawn_clipboard_watcher(writer.clone(), Arc::clone(&clipboard_state));
-    let mut input_log = InputLog::default();
+    let mut input_log = InputLog::new();
 
     loop {
         let frame = protocol::read_frame(&mut stream)?;
@@ -74,6 +74,7 @@ pub fn run(server: &str) -> std::io::Result<()> {
 }
 
 struct InputLog {
+    enabled: bool,
     count: u64,
     last_print: Instant,
 }
@@ -81,6 +82,7 @@ struct InputLog {
 impl Default for InputLog {
     fn default() -> Self {
         Self {
+            enabled: false,
             count: 0,
             last_print: Instant::now() - Duration::from_secs(2),
         }
@@ -88,7 +90,17 @@ impl Default for InputLog {
 }
 
 impl InputLog {
+    fn new() -> Self {
+        Self {
+            enabled: std::env::var_os("DESKBRIDGE_INPUT_LOG").is_some(),
+            ..Self::default()
+        }
+    }
+
     fn observe(&mut self, event: &InputEvent) {
+        if !self.enabled {
+            return;
+        }
         self.count += 1;
         if self.count == 1 || self.last_print.elapsed() >= Duration::from_secs(1) {
             eprintln!("received input event #{}: {:?}", self.count, event);
