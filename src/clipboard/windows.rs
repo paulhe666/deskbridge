@@ -22,6 +22,7 @@ use crate::protocol::ClipboardPayload;
 
 const BMP_FILE_HEADER_LEN: usize = 14;
 const BI_RGB: u32 = 0;
+const DROPEFFECT_COPY: u32 = 1;
 
 pub struct Clipboard;
 
@@ -257,6 +258,9 @@ fn write_files(files: &[PathBuf]) -> std::io::Result<()> {
         }
         Err(last_os_error("SetClipboardData failed"))
     } else {
+        if let Some(format) = registered_clipboard_format("Preferred DropEffect") {
+            let _ = set_clipboard_bytes(format, &DROPEFFECT_COPY.to_le_bytes());
+        }
         Ok(())
     }
 }

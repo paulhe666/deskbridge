@@ -811,40 +811,94 @@ impl InputEmitter {
 fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
     let mut pending_delta = (0i32, 0i32);
     let mut pending_wheel = (0i32, 0i32);
+    let mut pending_since = None;
     let mut log = InputSendLog::default();
 
     loop {
-        match receiver.recv_timeout(INPUT_FLUSH_INTERVAL) {
+        match receiver.recv_timeout(input_flush_timeout(pending_since)) {
             Ok(InputEvent::MouseDelta { dx, dy }) => {
+                if pending_since.is_none() {
+                    pending_since = Some(Instant::now());
+                }
                 pending_delta.0 += dx;
                 pending_delta.1 += dy;
-                flush_pending_input(&writer, &mut pending_delta, &mut pending_wheel, &mut log);
+                if pending_ready(pending_since) {
+                    flush_pending_input(
+                        &writer,
+                        &mut pending_delta,
+                        &mut pending_wheel,
+                        &mut pending_since,
+                        &mut log,
+                    );
+                }
             }
             Ok(InputEvent::MouseWheel {
                 horizontal,
                 vertical,
             }) => {
+                if pending_since.is_none() {
+                    pending_since = Some(Instant::now());
+                }
                 pending_wheel.0 += horizontal as i32;
                 pending_wheel.1 += vertical as i32;
+                if pending_ready(pending_since) {
+                    flush_pending_input(
+                        &writer,
+                        &mut pending_delta,
+                        &mut pending_wheel,
+                        &mut pending_since,
+                        &mut log,
+                    );
+                }
             }
             Ok(event) => {
-                flush_pending_input(&writer, &mut pending_delta, &mut pending_wheel, &mut log);
+                flush_pending_input(
+                    &writer,
+                    &mut pending_delta,
+                    &mut pending_wheel,
+                    &mut pending_since,
+                    &mut log,
+                );
                 write_input_event(&writer, event, &mut log);
             }
             Err(RecvTimeoutError::Timeout) => {
-                flush_pending_input(&writer, &mut pending_delta, &mut pending_wheel, &mut log);
+                flush_pending_input(
+                    &writer,
+                    &mut pending_delta,
+                    &mut pending_wheel,
+                    &mut pending_since,
+                    &mut log,
+                );
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
 }
 
+fn input_flush_timeout(pending_since: Option<Instant>) -> Duration {
+    pending_since
+        .map(|since| {
+            INPUT_FLUSH_INTERVAL
+                .checked_sub(since.elapsed())
+                .unwrap_or(Duration::ZERO)
+        })
+        .unwrap_or(INPUT_FLUSH_INTERVAL)
+}
+
+fn pending_ready(pending_since: Option<Instant>) -> bool {
+    pending_since
+        .map(|since| since.elapsed() >= INPUT_FLUSH_INTERVAL)
+        .unwrap_or(false)
+}
+
 fn flush_pending_input(
     writer: &SharedWriter,
     pending_delta: &mut (i32, i32),
     pending_wheel: &mut (i32, i32),
+    pending_since: &mut Option<Instant>,
     log: &mut InputSendLog,
 ) {
+    let mut wrote = false;
     if pending_delta.0 != 0 || pending_delta.1 != 0 {
         write_input_event(
             writer,
@@ -855,6 +909,7 @@ fn flush_pending_input(
             log,
         );
         *pending_delta = (0, 0);
+        wrote = true;
     }
     if pending_wheel.0 != 0 || pending_wheel.1 != 0 {
         write_input_event(
@@ -866,6 +921,10 @@ fn flush_pending_input(
             log,
         );
         *pending_wheel = (0, 0);
+        wrote = true;
+    }
+    if wrote {
+        *pending_since = None;
     }
 }
 

@@ -18,6 +18,10 @@ impl ClipboardApi for Clipboard {
         if let Some(files) = read_files()? {
             return Ok(Some(ClipboardPayload::Files(files)));
         }
+        if has_file_markers()? {
+            eprintln!("file clipboard markers found, but no readable file paths were resolved");
+            return Ok(None);
+        }
         if let Some(text) = read_text()? {
             return Ok(Some(ClipboardPayload::Text(text)));
         }
@@ -149,17 +153,26 @@ function emitPath(path) {
     console.log(value);
   }
 }
+function emitUrl(url) {
+  if (!url || url.isNil && url.isNil()) return;
+  const filePathURL = url.filePathURL;
+  if (filePathURL && !filePathURL.isNil()) {
+    emitPath(filePathURL.path);
+    return;
+  }
+  emitPath(url.path);
+}
 function emitFileUrl(value) {
   if (!value || value.isNil && value.isNil()) return;
   const string = ObjC.unwrap(value);
   if (!string) return;
   const url = $.NSURL.URLWithString(string);
-  if (url && !url.isNil()) emitPath(url.path);
+  emitUrl(url);
 }
 const urls = pasteboard.readObjectsForClassesOptions($[$.NSURL.class], $({}));
 if (urls && !urls.isNil()) {
   for (let i = 0; i < urls.count; i++) {
-    emitPath(urls.objectAtIndex(i).path);
+    emitUrl(urls.objectAtIndex(i));
   }
 }
 const legacy = pasteboard.propertyListForType("NSFilenamesPboardType");
@@ -170,7 +183,7 @@ const items = pasteboard.pasteboardItems;
 if (items && !items.isNil()) {
   for (let i = 0; i < items.count; i++) {
     const item = items.objectAtIndex(i);
-    for (const type of ["public.file-url", "NSURLPboardType", "com.apple.pasteboard.promised-file-url"]) {
+    for (const type of ["public.file-url", "com.apple.pasteboard.promised-file-url"]) {
       emitFileUrl(item.stringForType(type));
     }
   }
@@ -192,6 +205,36 @@ if (items && !items.isNil()) {
     } else {
         Ok(Some(files))
     }
+}
+
+fn has_file_markers() -> std::io::Result<bool> {
+    let script = r#"ObjC.import("AppKit");
+const pasteboard = $.NSPasteboard.generalPasteboard;
+const fileTypes = {
+  "public.file-url": true,
+  "NSFilenamesPboardType": true,
+  "com.apple.finder.noderef": true,
+  "com.apple.pasteboard.promised-file-url": true,
+  "Apple URL pasteboard type": true
+};
+const types = pasteboard.types;
+let found = false;
+for (let i = 0; types && !types.isNil() && i < types.count; i++) {
+  if (fileTypes[ObjC.unwrap(types.objectAtIndex(i))]) found = true;
+}
+const items = pasteboard.pasteboardItems;
+for (let i = 0; items && !items.isNil() && i < items.count; i++) {
+  const itemTypes = items.objectAtIndex(i).types;
+  for (let j = 0; itemTypes && !itemTypes.isNil() && j < itemTypes.count; j++) {
+    if (fileTypes[ObjC.unwrap(itemTypes.objectAtIndex(j))]) found = true;
+  }
+}
+if (found) console.log("1");
+"#;
+    let output = Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", script])
+        .output()?;
+    Ok(output.status.success() && !output.stdout.is_empty())
 }
 
 fn write_files(files: &[PathBuf]) -> std::io::Result<()> {
