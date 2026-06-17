@@ -224,6 +224,7 @@ fn spawn_clipboard_watcher(writer: SharedWriter, clipboard_state: Arc<Mutex<Clip
                     continue;
                 }
             };
+            eprintln!("local clipboard changed {}", clipboard_summary(&payload));
             let encoded = protocol::encode_clipboard(&payload);
             if !clipboard_state
                 .lock()

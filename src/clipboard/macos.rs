@@ -19,11 +19,14 @@ impl Clipboard {
 
 impl ClipboardApi for Clipboard {
     fn read(&mut self) -> std::io::Result<Option<ClipboardPayload>> {
-        let change_count = pasteboard_change_count()?;
-        if self.last_change_count == Some(change_count) {
-            return Ok(None);
+        if let Some(change_count) = pasteboard_change_count()? {
+            if self.last_change_count == Some(change_count) {
+                return Ok(None);
+            }
+            self.last_change_count = Some(change_count);
+        } else {
+            self.last_change_count = None;
         }
-        self.last_change_count = Some(change_count);
 
         if let Some(files) = read_files()? {
             return Ok(Some(ClipboardPayload::Files(files)));
@@ -49,7 +52,7 @@ impl ClipboardApi for Clipboard {
     }
 }
 
-fn pasteboard_change_count() -> std::io::Result<i64> {
+fn pasteboard_change_count() -> std::io::Result<Option<i64>> {
     let script = r#"ObjC.import("AppKit");
 console.log($.NSPasteboard.generalPasteboard.changeCount);
 "#;
@@ -57,10 +60,10 @@ console.log($.NSPasteboard.generalPasteboard.changeCount);
         .args(["-l", "JavaScript", "-e", script])
         .output()?;
     if !output.status.success() {
-        return Ok(-1);
+        return Ok(None);
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    Ok(text.trim().parse().unwrap_or(-1))
+    Ok(text.trim().parse().ok())
 }
 
 fn read_text() -> std::io::Result<Option<String>> {

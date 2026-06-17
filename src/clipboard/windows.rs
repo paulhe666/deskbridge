@@ -14,7 +14,7 @@ use windows_sys::Win32::System::DataExchange::{
 use windows_sys::Win32::System::Memory::{
     GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
-use windows_sys::Win32::System::Ole::{CF_DIB, CF_HDROP, CF_TEXT, CF_UNICODETEXT};
+use windows_sys::Win32::System::Ole::{CF_DIB, CF_HDROP, CF_OEMTEXT, CF_TEXT, CF_UNICODETEXT};
 use windows_sys::Win32::UI::Shell::{DROPFILES, DragQueryFileW, HDROP};
 
 use crate::clipboard::ClipboardApi;
@@ -40,19 +40,24 @@ impl ClipboardApi for Clipboard {
                 return Ok(Some(ClipboardPayload::Files(files)));
             }
         }
-        if unsafe { IsClipboardFormatAvailable(CF_DIB as u32) } != 0 {
-            if let Some(bitmap) = read_bitmap()? {
-                return Ok(Some(ClipboardPayload::Bitmap(bitmap)));
-            }
-        }
         if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT as u32) } != 0 {
             if let Some(text) = read_text()? {
                 return Ok(Some(ClipboardPayload::Text(text)));
             }
         }
         if unsafe { IsClipboardFormatAvailable(CF_TEXT as u32) } != 0 {
-            if let Some(text) = read_ansi_text()? {
+            if let Some(text) = read_narrow_text(CF_TEXT as u32)? {
                 return Ok(Some(ClipboardPayload::Text(text)));
+            }
+        }
+        if unsafe { IsClipboardFormatAvailable(CF_OEMTEXT as u32) } != 0 {
+            if let Some(text) = read_narrow_text(CF_OEMTEXT as u32)? {
+                return Ok(Some(ClipboardPayload::Text(text)));
+            }
+        }
+        if unsafe { IsClipboardFormatAvailable(CF_DIB as u32) } != 0 {
+            if let Some(bitmap) = read_bitmap()? {
+                return Ok(Some(ClipboardPayload::Bitmap(bitmap)));
             }
         }
         Ok(None)
@@ -129,8 +134,8 @@ fn write_text(text: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn read_ansi_text() -> std::io::Result<Option<String>> {
-    let handle = unsafe { GetClipboardData(CF_TEXT as u32) };
+fn read_narrow_text(format: u32) -> std::io::Result<Option<String>> {
+    let handle = unsafe { GetClipboardData(format) };
     if handle.is_null() {
         return Ok(None);
     }
