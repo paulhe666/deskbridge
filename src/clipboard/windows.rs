@@ -1,6 +1,8 @@
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
 use std::{ptr, slice};
 
 use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, POINT};
@@ -66,10 +68,13 @@ struct ClipboardGuard;
 
 impl ClipboardGuard {
     fn open() -> std::io::Result<Self> {
-        if unsafe { OpenClipboard(ptr::null_mut()) } == 0 {
-            return Err(last_os_error("OpenClipboard failed"));
+        for _ in 0..8 {
+            if unsafe { OpenClipboard(ptr::null_mut()) } != 0 {
+                return Ok(Self);
+            }
+            thread::sleep(Duration::from_millis(12));
         }
-        Ok(Self)
+        Err(last_os_error("OpenClipboard failed"))
     }
 }
 

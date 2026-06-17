@@ -102,7 +102,20 @@ ObjC.import("Foundation");
 const data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
 const pasteboard = $.NSPasteboard.generalPasteboard;
 pasteboard.clearContents;
-if (!pasteboard.setDataForType(data, "com.microsoft.bmp")) throw new Error("setDataForType failed");
+let wrote = pasteboard.setDataForType(data, "com.microsoft.bmp");
+const image = $.NSImage.alloc.initWithData(data);
+if (image && !image.isNil() && image.isValid) {
+  const tiff = image.TIFFRepresentation;
+  if (tiff && !tiff.isNil()) {
+    wrote = pasteboard.setDataForType(tiff, "public.tiff") || wrote;
+    const rep = $.NSBitmapImageRep.imageRepWithData(tiff);
+    if (rep && !rep.isNil()) {
+      const png = rep.representationUsingTypeProperties(4, $({}));
+      if (png && !png.isNil()) wrote = pasteboard.setDataForType(png, "public.png") || wrote;
+    }
+  }
+}
+if (!wrote) throw new Error("set image data failed");
 "#;
     write_filter("osascript", &["-l", "JavaScript", "-e", script], bmp).map(|_| ())
 }

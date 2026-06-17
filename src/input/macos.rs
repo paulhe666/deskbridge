@@ -618,6 +618,8 @@ fn scancode_to_macos_key(scancode: u16) -> Option<u16> {
         66 => 100,
         67 => 101,
         68 => 109,
+        91 => COMMAND_KEYCODE,
+        92 => RIGHT_COMMAND_KEYCODE,
         87 => 103,
         88 => 111,
         284 => 76,

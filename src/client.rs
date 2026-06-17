@@ -42,6 +42,7 @@ pub fn run(server: &str) -> std::io::Result<()> {
             }
             FrameKind::Clipboard => {
                 let payload = protocol::decode_clipboard(&frame.payload)?;
+                eprintln!("received clipboard {}", clipboard_summary(&payload));
                 remember_clipboard(&last_clipboard, &payload);
                 clipboard.write(&payload)?;
             }
@@ -55,6 +56,7 @@ pub fn run(server: &str) -> std::io::Result<()> {
             FrameKind::DragEnd => {
                 let files = incoming_files.finish();
                 let payload = ClipboardPayload::Files(files);
+                eprintln!("received clipboard {}", clipboard_summary(&payload));
                 remember_clipboard(&last_clipboard, &payload);
                 clipboard.write(&payload)?;
             }
@@ -116,6 +118,8 @@ fn spawn_clipboard_watcher(writer: SharedWriter, last_clipboard: Arc<Mutex<Optio
             }
             if let Err(e) = send_clipboard_payload(&writer, &payload) {
                 eprintln!("clipboard send failed: {e}");
+            } else {
+                eprintln!("sent clipboard {}", clipboard_summary(&payload));
             }
         }
     });
@@ -139,4 +143,12 @@ fn send_clipboard_payload(
 
 fn remember_clipboard(last_clipboard: &Arc<Mutex<Option<Vec<u8>>>>, payload: &ClipboardPayload) {
     *last_clipboard.lock().unwrap() = Some(protocol::encode_clipboard(payload));
+}
+
+fn clipboard_summary(payload: &ClipboardPayload) -> String {
+    match payload {
+        ClipboardPayload::Text(text) => format!("text ({} chars)", text.chars().count()),
+        ClipboardPayload::Bitmap(bitmap) => format!("image ({} bytes)", bitmap.len()),
+        ClipboardPayload::Files(files) => format!("files ({} item(s))", files.len()),
+    }
 }
