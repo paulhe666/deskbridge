@@ -52,9 +52,7 @@ fn read_bitmap() -> std::io::Result<Option<Vec<u8>>> {
     let script = r#"ObjC.import("AppKit");
 ObjC.import("Foundation");
 function exists(value) { return value !== undefined && value !== null && !(value.isNil && value.isNil()); }
-function bmpDataFromImageData(data) {
-  if (!exists(data)) return null;
-  const image = $.NSImage.alloc.initWithData(data);
+function bmpDataFromImage(image) {
   if (!exists(image) || !image.isValid) return null;
   const tiff = image.TIFFRepresentation;
   if (!exists(tiff)) return null;
@@ -62,27 +60,19 @@ function bmpDataFromImageData(data) {
   if (!exists(rep)) return null;
   return rep.representationUsingTypeProperties(1, $({}));
 }
+function bmpDataFromPasteboardData(data) {
+  if (!exists(data)) return null;
+  const image = $.NSImage.alloc.initWithData(data);
+  return bmpDataFromImage(image);
+}
 const pasteboard = $.NSPasteboard.generalPasteboard;
 let out = null;
-for (const type of ["com.microsoft.bmp", "public.bmp", "com.apple.pict"]) {
-  const data = pasteboard.dataForType(type);
-  if (exists(data)) {
-    out = data;
-    break;
-  }
+for (const type of ["public.png", "public.tiff", "public.jpeg", "public.heic", "com.microsoft.bmp", "public.bmp", "com.apple.pict"]) {
+  out = bmpDataFromPasteboardData(pasteboard.dataForType(type));
+  if (exists(out)) break;
 }
 if (!exists(out)) {
-  for (const type of ["public.png", "public.tiff", "public.jpeg", "public.heic"]) {
-    out = bmpDataFromImageData(pasteboard.dataForType(type));
-    if (exists(out)) break;
-  }
-}
-if (!exists(out)) {
-  const image = $.NSImage.alloc.initWithPasteboard(pasteboard);
-  if (exists(image) && image.isValid) {
-    const rep = $.NSBitmapImageRep.imageRepWithData(image.TIFFRepresentation);
-    if (exists(rep)) out = rep.representationUsingTypeProperties(1, $({}));
-  }
+  out = bmpDataFromImage($.NSImage.alloc.initWithPasteboard(pasteboard));
 }
 if (exists(out)) $.NSFileHandle.fileHandleWithStandardOutput.writeData(out);
 "#;
@@ -235,9 +225,10 @@ fn write_filter(program: &str, args: &[&str], data: &[u8]) -> std::io::Result<Ve
     if output.status.success() {
         Ok(output.stdout)
     } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         Err(std::io::Error::new(
             std::io::ErrorKind::Other,
-            "clipboard command failed",
+            format!("clipboard command failed: {stderr}"),
         ))
     }
 }
