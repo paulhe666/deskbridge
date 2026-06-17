@@ -13,7 +13,7 @@ use windows_sys::Win32::System::DataExchange::{
 use windows_sys::Win32::System::Memory::{
     GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
-use windows_sys::Win32::System::Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT};
+use windows_sys::Win32::System::Ole::{CF_DIB, CF_HDROP, CF_TEXT, CF_UNICODETEXT};
 use windows_sys::Win32::UI::Shell::{DROPFILES, DragQueryFileW, HDROP};
 
 use crate::clipboard::ClipboardApi;
@@ -45,6 +45,11 @@ impl ClipboardApi for Clipboard {
         }
         if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT as u32) } != 0 {
             if let Some(text) = read_text()? {
+                return Ok(Some(ClipboardPayload::Text(text)));
+            }
+        }
+        if unsafe { IsClipboardFormatAvailable(CF_TEXT as u32) } != 0 {
+            if let Some(text) = read_ansi_text()? {
                 return Ok(Some(ClipboardPayload::Text(text)));
             }
         }
@@ -111,7 +116,35 @@ fn write_text(text: &str) -> std::io::Result<()> {
         .iter()
         .flat_map(|ch| ch.to_le_bytes())
         .collect::<Vec<_>>();
-    set_clipboard_bytes(CF_UNICODETEXT as u32, &bytes)
+    set_clipboard_bytes(CF_UNICODETEXT as u32, &bytes)?;
+
+    let mut ansi = text
+        .chars()
+        .map(|ch| if ch.is_ascii() { ch as u8 } else { b'?' })
+        .collect::<Vec<_>>();
+    ansi.push(0);
+    let _ = set_clipboard_bytes(CF_TEXT as u32, &ansi);
+    Ok(())
+}
+
+fn read_ansi_text() -> std::io::Result<Option<String>> {
+    let handle = unsafe { GetClipboardData(CF_TEXT as u32) };
+    if handle.is_null() {
+        return Ok(None);
+    }
+    let bytes = copy_global(handle as HGLOBAL)?;
+    let text = bytes
+        .split(|byte| *byte == 0)
+        .next()
+        .unwrap_or_default()
+        .iter()
+        .map(|byte| *byte as char)
+        .collect::<String>();
+    if text.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(text))
+    }
 }
 
 fn read_bitmap() -> std::io::Result<Option<Vec<u8>>> {

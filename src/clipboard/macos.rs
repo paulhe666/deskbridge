@@ -124,11 +124,39 @@ fn read_files() -> std::io::Result<Option<Vec<PathBuf>>> {
     let script = r#"ObjC.import("AppKit");
 ObjC.import("Foundation");
 const pasteboard = $.NSPasteboard.generalPasteboard;
+const seen = {};
+function emitPath(path) {
+  if (!path || path.isNil && path.isNil()) return;
+  const value = ObjC.unwrap(path);
+  if (value && !seen[value]) {
+    seen[value] = true;
+    console.log(value);
+  }
+}
+function emitFileUrl(value) {
+  if (!value || value.isNil && value.isNil()) return;
+  const string = ObjC.unwrap(value);
+  if (!string) return;
+  const url = $.NSURL.URLWithString(string);
+  if (url && !url.isNil()) emitPath(url.path);
+}
 const urls = pasteboard.readObjectsForClassesOptions($[$.NSURL.class], $({}));
-if (urls) {
+if (urls && !urls.isNil()) {
   for (let i = 0; i < urls.count; i++) {
-    const path = urls.objectAtIndex(i).path;
-    if (path) console.log(ObjC.unwrap(path));
+    emitPath(urls.objectAtIndex(i).path);
+  }
+}
+const legacy = pasteboard.propertyListForType("NSFilenamesPboardType");
+if (legacy && !legacy.isNil()) {
+  for (let i = 0; i < legacy.count; i++) emitPath(legacy.objectAtIndex(i));
+}
+const items = pasteboard.pasteboardItems;
+if (items && !items.isNil()) {
+  for (let i = 0; i < items.count; i++) {
+    const item = items.objectAtIndex(i);
+    for (const type of ["public.file-url", "NSURLPboardType", "com.apple.pasteboard.promised-file-url"]) {
+      emitFileUrl(item.stringForType(type));
+    }
   }
 }
 "#;
@@ -167,7 +195,19 @@ const urls = $.NSMutableArray.array;
 for (const path of paths) urls.addObject($.NSURL.fileURLWithPath(path));
 const pasteboard = $.NSPasteboard.generalPasteboard;
 pasteboard.clearContents;
-pasteboard.writeObjects(urls);
+let wrote = pasteboard.writeObjects(urls);
+if (!wrote) {
+  const fallbackItems = $.NSMutableArray.array;
+  for (let i = 0; i < urls.count; i++) {
+    const url = urls.objectAtIndex(i);
+    const item = $.NSPasteboardItem.alloc.init;
+    item.setStringForType(url.absoluteString, "public.file-url");
+    item.setStringForType(url.absoluteString, "NSURLPboardType");
+    fallbackItems.addObject(item);
+  }
+  wrote = pasteboard.writeObjects(fallbackItems);
+}
+if (!wrote) throw new Error("write file URLs failed");
 "#;
     write_filter(
         "osascript",

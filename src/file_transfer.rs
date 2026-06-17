@@ -7,6 +7,7 @@ use crate::protocol::{self, Frame, FrameKind};
 use crate::transport::SharedWriter;
 
 const MAX_BUNDLE_SIZE: u64 = 512 * 1024 * 1024;
+const DIRECTORY_MARKER_LEN: u64 = u64::MAX;
 
 pub fn send_files(writer: &SharedWriter, files: &[PathBuf]) -> std::io::Result<()> {
     let entries = collect_entries(files)?;
@@ -20,6 +21,11 @@ pub fn send_files(writer: &SharedWriter, files: &[PathBuf]) -> std::io::Result<(
 
     for entry in entries {
         if entry.is_dir {
+            writer.write(Frame::new(
+                FrameKind::FileStart,
+                protocol::encode_file_start(&entry.relative, DIRECTORY_MARKER_LEN),
+            ))?;
+            writer.write(Frame::new(FrameKind::FileEnd, Vec::new()))?;
             continue;
         }
         writer.write(Frame::new(
@@ -69,6 +75,11 @@ impl IncomingBundle {
         }
         if let Some(top) = top_level_path(relative)? {
             self.received_roots.insert(self.root.join(top));
+        }
+        if len == DIRECTORY_MARKER_LEN {
+            fs::create_dir_all(self.root.join(safe_relative_path(relative)?))?;
+            self.current = None;
+            return Ok(());
         }
         self.current = Some(start_receive(&self.root, relative, len)?);
         Ok(())
