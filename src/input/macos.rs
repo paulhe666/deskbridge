@@ -27,11 +27,15 @@ const OPTION_KEYCODE: u16 = 58;
 const RIGHT_OPTION_KEYCODE: u16 = 61;
 const LEFT_SHIFT_KEYCODE: u16 = 56;
 const RIGHT_SHIFT_KEYCODE: u16 = 60;
+const CAPS_LOCK_KEYCODE: u16 = 57;
+const BACKSPACE_KEYCODE: u16 = 51;
 const SPACE_KEYCODE: u16 = 49;
 const NUMBER_4_KEYCODE: u16 = 21;
 const PRINT_SCREEN_SCANCODE: u16 = 311;
+const CAPS_LOCK_SCANCODE: u16 = 58;
 const LEFT_SHIFT_SCANCODE: u16 = 42;
 const RIGHT_SHIFT_SCANCODE: u16 = 54;
+const BACKSPACE_REPEAT_INTERVAL: Duration = Duration::from_millis(90);
 const DEFAULT_SCROLL_FRAME_MS: u64 = 8;
 const DEFAULT_SCROLL_SCALE: f64 = 1.25;
 const DEFAULT_SCROLL_RESPONSE: f64 = 0.34;
@@ -53,6 +57,7 @@ pub struct InputSink {
     mouse_position: CGPoint,
     scroll: SmoothScroller,
     shift_tap_candidate: Option<u16>,
+    last_backspace_repeat: Option<Instant>,
 }
 
 impl InputSink {
@@ -73,6 +78,7 @@ impl InputSink {
             mouse_position: CGPoint::new(0.0, 0.0),
             scroll: SmoothScroller::spawn(),
             shift_tap_candidate: None,
+            last_backspace_repeat: None,
         })
     }
 
@@ -96,6 +102,12 @@ impl InputSink {
             }
             return Ok(());
         }
+        if scancode == CAPS_LOCK_SCANCODE {
+            if state == KeyState::Down {
+                self.caps_lock_tap()?;
+            }
+            return Ok(());
+        }
 
         if self.handle_shift_tap(scancode, state)? {
             return Ok(());
@@ -109,15 +121,24 @@ impl InputSink {
         };
         match state {
             KeyState::Down => {
+                if keycode == BACKSPACE_KEYCODE {
+                    self.last_backspace_repeat = Some(Instant::now());
+                }
                 if self.pressed_keys.insert(keycode) {
                     self.post_key(keycode, true)?;
                 }
             }
             KeyState::Up => {
+                if keycode == BACKSPACE_KEYCODE {
+                    self.last_backspace_repeat = None;
+                }
                 self.pressed_keys.remove(&keycode);
                 self.post_key(keycode, false)?;
             }
             KeyState::Repeat => {
+                if keycode == BACKSPACE_KEYCODE && !self.backspace_repeat_due() {
+                    return Ok(());
+                }
                 if self.pressed_keys.contains(&keycode) {
                     self.post_key_repeat(keycode)?;
                 } else {
@@ -127,6 +148,19 @@ impl InputSink {
             }
         }
         Ok(())
+    }
+
+    fn backspace_repeat_due(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .last_backspace_repeat
+            .map(|last| now.saturating_duration_since(last) < BACKSPACE_REPEAT_INTERVAL)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        self.last_backspace_repeat = Some(now);
+        true
     }
 
     fn handle_shift_tap(&mut self, scancode: u16, state: KeyState) -> std::io::Result<bool> {
@@ -181,6 +215,11 @@ impl InputSink {
         self.post_key_with_flags(SPACE_KEYCODE, true, CGEventFlags::CGEventFlagControl)?;
         self.post_key_with_flags(SPACE_KEYCODE, false, CGEventFlags::CGEventFlagControl)?;
         self.post_key_with_flags(CONTROL_KEYCODE, false, CGEventFlags::empty())
+    }
+
+    fn caps_lock_tap(&self) -> std::io::Result<()> {
+        self.post_key_with_flags(CAPS_LOCK_KEYCODE, true, CGEventFlags::CGEventFlagAlphaShift)?;
+        self.post_key_with_flags(CAPS_LOCK_KEYCODE, false, CGEventFlags::empty())
     }
 
     fn post_key(&self, keycode: u16, down: bool) -> std::io::Result<()> {
