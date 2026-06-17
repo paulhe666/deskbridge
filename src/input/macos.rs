@@ -41,6 +41,8 @@ const DEFAULT_SCROLL_SCALE: f64 = 1.25;
 const DEFAULT_SCROLL_RESPONSE: f64 = 0.34;
 const DEFAULT_SCROLL_MAX_STEP: f64 = 96.0;
 const SCROLL_ACCEL_WINDOW: Duration = Duration::from_millis(85);
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
+const DOUBLE_CLICK_DISTANCE: f64 = 5.0;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -55,6 +57,7 @@ pub struct InputSink {
     mouse_buttons: MouseButtons,
     screen_size: (i32, i32),
     mouse_position: CGPoint,
+    click_tracker: ClickTracker,
     scroll: SmoothScroller,
     shift_tap_candidate: Option<u16>,
     last_backspace_repeat: Option<Instant>,
@@ -76,6 +79,7 @@ impl InputSink {
             mouse_buttons: MouseButtons::default(),
             screen_size: screen_size_i32(),
             mouse_position: CGPoint::new(0.0, 0.0),
+            click_tracker: ClickTracker::default(),
             scroll: SmoothScroller::spawn(),
             shift_tap_candidate: None,
             last_backspace_repeat: None,
@@ -286,13 +290,13 @@ impl InputSink {
     fn post_pointer_motion(&self) -> std::io::Result<()> {
         if let Some((drag_ty, button)) = self.mouse_buttons.drag_event() {
             let _ = CGDisplay::warp_mouse_cursor_position(self.mouse_position);
-            self.post_mouse_event(drag_ty, button)?;
+            self.post_mouse_event(drag_ty, button, 0)?;
             return Ok(());
         }
 
         if let Err(code) = CGDisplay::warp_mouse_cursor_position(self.mouse_position) {
             eprintln!("cursor warp failed ({code}); falling back to mouse move event");
-            self.post_mouse_event(CGEventType::MouseMoved, CGMouseButton::Left)?;
+            self.post_mouse_event(CGEventType::MouseMoved, CGMouseButton::Left, 0)?;
         }
         Ok(())
     }
@@ -301,10 +305,12 @@ impl InputSink {
         &self,
         event_type: CGEventType,
         button: CGMouseButton,
+        click_count: i64,
     ) -> std::io::Result<()> {
         let event =
             CGEvent::new_mouse_event(self.source.clone(), event_type, self.mouse_position, button)
                 .map_err(|_| event_err("failed to create mouse event"))?;
+        event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_count);
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -328,7 +334,10 @@ impl InputSink {
             ),
         };
         self.mouse_buttons.set(button, down);
-        self.post_mouse_event(if down { down_ty } else { up_ty }, button)?;
+        let click_count = self
+            .click_tracker
+            .click_count(button, down, self.mouse_position);
+        self.post_mouse_event(if down { down_ty } else { up_ty }, button, click_count)?;
         Ok(())
     }
 
@@ -380,6 +389,67 @@ impl MouseButtons {
             None
         }
     }
+}
+
+#[derive(Default)]
+struct ClickTracker {
+    last: Option<ClickRecord>,
+}
+
+#[derive(Clone, Copy)]
+struct ClickRecord {
+    button: u8,
+    position: CGPoint,
+    at: Instant,
+    count: i64,
+}
+
+impl ClickTracker {
+    fn click_count(&mut self, button: CGMouseButton, down: bool, position: CGPoint) -> i64 {
+        if down {
+            let now = Instant::now();
+            let count = self
+                .last
+                .filter(|last| same_click_sequence(last, button, position, now))
+                .map(|last| (last.count + 1).min(2))
+                .unwrap_or(1);
+            self.last = Some(ClickRecord {
+                button: mouse_button_id(button),
+                position,
+                at: now,
+                count,
+            });
+            count
+        } else {
+            self.last.map(|last| last.count).unwrap_or(1)
+        }
+    }
+}
+
+fn same_click_sequence(
+    last: &ClickRecord,
+    button: CGMouseButton,
+    position: CGPoint,
+    now: Instant,
+) -> bool {
+    last.button == mouse_button_id(button)
+        && now.saturating_duration_since(last.at) <= DOUBLE_CLICK_WINDOW
+        && distance_squared(last.position, position)
+            <= DOUBLE_CLICK_DISTANCE * DOUBLE_CLICK_DISTANCE
+}
+
+fn mouse_button_id(button: CGMouseButton) -> u8 {
+    match button {
+        CGMouseButton::Left => 0,
+        CGMouseButton::Right => 1,
+        CGMouseButton::Center => 2,
+    }
+}
+
+fn distance_squared(a: CGPoint, b: CGPoint) -> f64 {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    dx * dx + dy * dy
 }
 
 #[derive(Clone)]
