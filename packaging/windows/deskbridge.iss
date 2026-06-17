@@ -35,4 +35,4 @@ Name: "{group}\Uninstall Deskbridge"; Filename: "{uninstallexe}"
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Deskbridge"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{userprofile}\.deskbridge"
+Type: filesandordirs; Name: "{%USERPROFILE}\.deskbridge"
