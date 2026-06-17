@@ -87,7 +87,7 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
         remote_size.0, remote_size.1, config.edge, addr
     );
 
-    let last_clipboard = Arc::new(Mutex::new(None));
+    let clipboard_state = Arc::new(Mutex::new(ClipboardSyncState::default()));
     let input = InputEmitter::spawn(writer.clone());
     let state = Arc::new(Mutex::new(CaptureState::new(
         input,
@@ -101,8 +101,8 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
         ));
     }
 
-    spawn_inbound_reader(stream, Arc::clone(&last_clipboard));
-    spawn_clipboard_watcher(writer, last_clipboard);
+    spawn_inbound_reader(stream, Arc::clone(&clipboard_state));
+    spawn_clipboard_watcher(writer, clipboard_state);
 
     let drop_strip = if drop_strip_enabled() {
         Some(DropStrip::create(config.edge)?)
@@ -136,7 +136,7 @@ fn read_client_hello(stream: &mut TcpStream) -> std::io::Result<(i32, i32)> {
     Ok((width.max(1), height.max(1)))
 }
 
-fn spawn_inbound_reader(mut stream: TcpStream, last_clipboard: Arc<Mutex<Option<Vec<u8>>>>) {
+fn spawn_inbound_reader(mut stream: TcpStream, clipboard_state: Arc<Mutex<ClipboardSyncState>>) {
     thread::spawn(move || {
         let mut clipboard = match Clipboard::new() {
             Ok(clipboard) => clipboard,
@@ -160,9 +160,10 @@ fn spawn_inbound_reader(mut stream: TcpStream, last_clipboard: Arc<Mutex<Option<
                 FrameKind::Clipboard => match protocol::decode_clipboard(&frame.payload) {
                     Ok(payload) => {
                         eprintln!("received clipboard {}", clipboard_summary(&payload));
-                        remember_clipboard(&last_clipboard, &payload);
                         if let Err(e) = clipboard.write(&payload) {
                             eprintln!("clipboard write failed: {e}");
+                        } else {
+                            note_remote_clipboard(&clipboard_state, &payload);
                         }
                     }
                     Err(e) => eprintln!("clipboard decode failed: {e}"),
@@ -183,9 +184,10 @@ fn spawn_inbound_reader(mut stream: TcpStream, last_clipboard: Arc<Mutex<Option<
                 FrameKind::DragEnd => {
                     let payload = ClipboardPayload::Files(incoming_files.finish());
                     eprintln!("received clipboard {}", clipboard_summary(&payload));
-                    remember_clipboard(&last_clipboard, &payload);
                     if let Err(e) = clipboard.write(&payload) {
                         eprintln!("file clipboard write failed: {e}");
+                    } else {
+                        note_remote_clipboard(&clipboard_state, &payload);
                     }
                 }
                 _ => {}
@@ -194,7 +196,7 @@ fn spawn_inbound_reader(mut stream: TcpStream, last_clipboard: Arc<Mutex<Option<
     });
 }
 
-fn spawn_clipboard_watcher(writer: SharedWriter, last_clipboard: Arc<Mutex<Option<Vec<u8>>>>) {
+fn spawn_clipboard_watcher(writer: SharedWriter, clipboard_state: Arc<Mutex<ClipboardSyncState>>) {
     thread::spawn(move || {
         let mut clipboard = match Clipboard::new() {
             Ok(clipboard) => clipboard,
@@ -221,12 +223,12 @@ fn spawn_clipboard_watcher(writer: SharedWriter, last_clipboard: Arc<Mutex<Optio
                 }
             };
             let encoded = protocol::encode_clipboard(&payload);
+            if !clipboard_state
+                .lock()
+                .unwrap()
+                .accept_local_change(&payload, encoded)
             {
-                let mut last = last_clipboard.lock().unwrap();
-                if last.as_ref() == Some(&encoded) {
-                    continue;
-                }
-                *last = Some(encoded);
+                continue;
             }
             if let Err(e) = send_clipboard_payload(&writer, &payload) {
                 eprintln!("clipboard send failed: {e}");
@@ -253,8 +255,56 @@ fn send_clipboard_payload(
     }
 }
 
-fn remember_clipboard(last_clipboard: &Arc<Mutex<Option<Vec<u8>>>>, payload: &ClipboardPayload) {
-    *last_clipboard.lock().unwrap() = Some(protocol::encode_clipboard(payload));
+#[derive(Default)]
+struct ClipboardSyncState {
+    last_observed: Option<Vec<u8>>,
+    suppress_next_kind: Option<ClipboardKind>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClipboardKind {
+    Text,
+    Bitmap,
+    Files,
+}
+
+impl ClipboardSyncState {
+    fn accept_local_change(&mut self, payload: &ClipboardPayload, encoded: Vec<u8>) -> bool {
+        if self.last_observed.as_ref() == Some(&encoded) {
+            return false;
+        }
+
+        let kind = ClipboardKind::from_payload(payload);
+        if self.suppress_next_kind.take() == Some(kind) {
+            self.last_observed = Some(encoded);
+            return false;
+        }
+
+        self.last_observed = Some(encoded);
+        true
+    }
+
+    fn note_remote_write(&mut self, payload: &ClipboardPayload) {
+        self.last_observed = Some(protocol::encode_clipboard(payload));
+        self.suppress_next_kind = Some(ClipboardKind::from_payload(payload));
+    }
+}
+
+impl ClipboardKind {
+    fn from_payload(payload: &ClipboardPayload) -> Self {
+        match payload {
+            ClipboardPayload::Text(_) => Self::Text,
+            ClipboardPayload::Bitmap(_) => Self::Bitmap,
+            ClipboardPayload::Files(_) => Self::Files,
+        }
+    }
+}
+
+fn note_remote_clipboard(
+    clipboard_state: &Arc<Mutex<ClipboardSyncState>>,
+    payload: &ClipboardPayload,
+) {
+    clipboard_state.lock().unwrap().note_remote_write(payload);
 }
 
 fn clipboard_summary(payload: &ClipboardPayload) -> String {
@@ -657,7 +707,7 @@ impl CaptureState {
             if (hook.flags & LLMHF_INJECTED) != 0 {
                 return true;
             }
-            self.lock_cursor_to_anchor();
+            self.recenter_cursor_if_needed(hook);
             return true;
         }
 
@@ -770,6 +820,15 @@ impl CaptureState {
         unsafe {
             SetCursorPos(anchor.0, anchor.1);
             ClipCursor(&rect);
+        }
+    }
+
+    fn recenter_cursor_if_needed(&self, hook: &MSLLHOOKSTRUCT) {
+        let anchor = self.anchor();
+        if (hook.pt.x - anchor.0).abs() > 0 || (hook.pt.y - anchor.1).abs() > 0 {
+            unsafe {
+                SetCursorPos(anchor.0, anchor.1);
+            }
         }
     }
 

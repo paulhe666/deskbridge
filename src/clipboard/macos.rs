@@ -5,21 +5,30 @@ use std::process::{Command, Stdio};
 use crate::clipboard::ClipboardApi;
 use crate::protocol::ClipboardPayload;
 
-pub struct Clipboard;
+pub struct Clipboard {
+    last_change_count: Option<i64>,
+}
 
 impl Clipboard {
     pub fn new() -> std::io::Result<Self> {
-        Ok(Self)
+        Ok(Self {
+            last_change_count: None,
+        })
     }
 }
 
 impl ClipboardApi for Clipboard {
     fn read(&mut self) -> std::io::Result<Option<ClipboardPayload>> {
+        let change_count = pasteboard_change_count()?;
+        if self.last_change_count == Some(change_count) {
+            return Ok(None);
+        }
+        self.last_change_count = Some(change_count);
+
         if let Some(files) = read_files()? {
             return Ok(Some(ClipboardPayload::Files(files)));
         }
         if has_file_markers()? {
-            eprintln!("file clipboard markers found, but no readable file paths were resolved");
             return Ok(None);
         }
         if let Some(text) = read_text()? {
@@ -38,6 +47,20 @@ impl ClipboardApi for Clipboard {
             ClipboardPayload::Files(files) => write_files(files),
         }
     }
+}
+
+fn pasteboard_change_count() -> std::io::Result<i64> {
+    let script = r#"ObjC.import("AppKit");
+console.log($.NSPasteboard.generalPasteboard.changeCount);
+"#;
+    let output = Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", script])
+        .output()?;
+    if !output.status.success() {
+        return Ok(-1);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text.trim().parse().unwrap_or(-1))
 }
 
 fn read_text() -> std::io::Result<Option<String>> {

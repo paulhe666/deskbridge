@@ -28,8 +28,8 @@ pub fn run(server: &str) -> std::io::Result<()> {
     eprintln!("client ready");
     let receive_root = std::env::temp_dir().join("deskbridge-received");
     let mut incoming_files = file_transfer::IncomingBundle::new(receive_root);
-    let last_clipboard = Arc::new(Mutex::new(None));
-    spawn_clipboard_watcher(writer.clone(), Arc::clone(&last_clipboard));
+    let clipboard_state = Arc::new(Mutex::new(ClipboardSyncState::default()));
+    spawn_clipboard_watcher(writer.clone(), Arc::clone(&clipboard_state));
     let mut input_log = InputLog::default();
 
     loop {
@@ -43,8 +43,11 @@ pub fn run(server: &str) -> std::io::Result<()> {
             FrameKind::Clipboard => {
                 let payload = protocol::decode_clipboard(&frame.payload)?;
                 eprintln!("received clipboard {}", clipboard_summary(&payload));
-                remember_clipboard(&last_clipboard, &payload);
-                clipboard.write(&payload)?;
+                if let Err(e) = clipboard.write(&payload) {
+                    eprintln!("clipboard write failed: {e}");
+                } else {
+                    note_remote_clipboard(&clipboard_state, &payload);
+                }
             }
             FrameKind::FileStart => {
                 let (relative, len) = protocol::decode_file_start(&frame.payload)?;
@@ -57,8 +60,11 @@ pub fn run(server: &str) -> std::io::Result<()> {
                 let files = incoming_files.finish();
                 let payload = ClipboardPayload::Files(files);
                 eprintln!("received clipboard {}", clipboard_summary(&payload));
-                remember_clipboard(&last_clipboard, &payload);
-                clipboard.write(&payload)?;
+                if let Err(e) = clipboard.write(&payload) {
+                    eprintln!("file clipboard write failed: {e}");
+                } else {
+                    note_remote_clipboard(&clipboard_state, &payload);
+                }
             }
             _ => {}
         }
@@ -89,7 +95,7 @@ impl InputLog {
     }
 }
 
-fn spawn_clipboard_watcher(writer: SharedWriter, last_clipboard: Arc<Mutex<Option<Vec<u8>>>>) {
+fn spawn_clipboard_watcher(writer: SharedWriter, clipboard_state: Arc<Mutex<ClipboardSyncState>>) {
     thread::spawn(move || {
         let mut clipboard = match Clipboard::new() {
             Ok(clipboard) => clipboard,
@@ -109,12 +115,12 @@ fn spawn_clipboard_watcher(writer: SharedWriter, last_clipboard: Arc<Mutex<Optio
                 }
             };
             let encoded = protocol::encode_clipboard(&payload);
+            if !clipboard_state
+                .lock()
+                .unwrap()
+                .accept_local_change(&payload, encoded)
             {
-                let mut last = last_clipboard.lock().unwrap();
-                if last.as_ref() == Some(&encoded) {
-                    continue;
-                }
-                *last = Some(encoded);
+                continue;
             }
             if let Err(e) = send_clipboard_payload(&writer, &payload) {
                 eprintln!("clipboard send failed: {e}");
@@ -141,8 +147,56 @@ fn send_clipboard_payload(
     }
 }
 
-fn remember_clipboard(last_clipboard: &Arc<Mutex<Option<Vec<u8>>>>, payload: &ClipboardPayload) {
-    *last_clipboard.lock().unwrap() = Some(protocol::encode_clipboard(payload));
+#[derive(Default)]
+struct ClipboardSyncState {
+    last_observed: Option<Vec<u8>>,
+    suppress_next_kind: Option<ClipboardKind>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClipboardKind {
+    Text,
+    Bitmap,
+    Files,
+}
+
+impl ClipboardSyncState {
+    fn accept_local_change(&mut self, payload: &ClipboardPayload, encoded: Vec<u8>) -> bool {
+        if self.last_observed.as_ref() == Some(&encoded) {
+            return false;
+        }
+
+        let kind = ClipboardKind::from_payload(payload);
+        if self.suppress_next_kind.take() == Some(kind) {
+            self.last_observed = Some(encoded);
+            return false;
+        }
+
+        self.last_observed = Some(encoded);
+        true
+    }
+
+    fn note_remote_write(&mut self, payload: &ClipboardPayload) {
+        self.last_observed = Some(protocol::encode_clipboard(payload));
+        self.suppress_next_kind = Some(ClipboardKind::from_payload(payload));
+    }
+}
+
+impl ClipboardKind {
+    fn from_payload(payload: &ClipboardPayload) -> Self {
+        match payload {
+            ClipboardPayload::Text(_) => Self::Text,
+            ClipboardPayload::Bitmap(_) => Self::Bitmap,
+            ClipboardPayload::Files(_) => Self::Files,
+        }
+    }
+}
+
+fn note_remote_clipboard(
+    clipboard_state: &Arc<Mutex<ClipboardSyncState>>,
+    payload: &ClipboardPayload,
+) {
+    clipboard_state.lock().unwrap().note_remote_write(payload);
 }
 
 fn clipboard_summary(payload: &ClipboardPayload) -> String {
