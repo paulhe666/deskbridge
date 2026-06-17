@@ -731,6 +731,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 name = "deskbridge"
 version = "0.1.0"
 dependencies = [
+ "core-foundation 0.10.1",
  "core-graphics 0.25.0",
  "eframe",
  "windows-sys 0.59.0",

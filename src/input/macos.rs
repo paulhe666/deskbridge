@@ -6,6 +6,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use core_foundation::base::{Boolean, TCFType};
+use core_foundation::boolean::CFBoolean;
+use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::display::CGDisplay;
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, EventField,
@@ -37,6 +41,8 @@ const SCROLL_ACCEL_WINDOW: Duration = Duration::from_millis(85);
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> c_uchar;
+    fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> Boolean;
+    static kAXTrustedCheckOptionPrompt: CFStringRef;
 }
 
 pub struct InputSink {
@@ -53,10 +59,11 @@ impl InputSink {
     pub fn new() -> std::io::Result<Self> {
         let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
             .map_err(|_| event_err("failed to create event source"))?;
-        if unsafe { AXIsProcessTrusted() } == 0 {
+        if !accessibility_trusted() {
             eprintln!(
-                "warning: macOS Accessibility permission is not granted for this process; input may be ignored"
+                "warning: macOS Accessibility permission is not granted for this process; keyboard and mouse buttons may be ignored"
             );
+            request_accessibility_permission();
         }
         Ok(Self {
             source,
@@ -266,6 +273,22 @@ impl InputSink {
 
     fn mouse_wheel(&self, horizontal: i16, vertical: i16) -> std::io::Result<()> {
         self.scroll.push(horizontal as i32, vertical as i32)
+    }
+}
+
+fn accessibility_trusted() -> bool {
+    unsafe { AXIsProcessTrusted() != 0 }
+}
+
+fn request_accessibility_permission() {
+    let key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
+    let prompt = CFBoolean::true_value();
+    let options = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), prompt.as_CFType())]);
+    let trusted = unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) != 0 };
+    if !trusted {
+        eprintln!(
+            "open System Settings > Privacy & Security > Accessibility and enable Deskbridge"
+        );
     }
 }
 
