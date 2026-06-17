@@ -9,9 +9,16 @@ pub enum Role {
     Client,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    Chinese,
+    English,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub role: Role,
+    pub language: Language,
     pub bind: String,
     pub server: String,
     pub edge: Edge,
@@ -25,6 +32,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             role: Role::Client,
+            language: default_language(),
             bind: "0.0.0.0:24920".to_string(),
             server: "192.168.1.10:24920".to_string(),
             edge: Edge::Right,
@@ -53,6 +61,9 @@ impl AppConfig {
                     } else {
                         Role::Client
                     }
+                }
+                "language" => {
+                    config.language = Language::parse(value.trim()).unwrap_or(config.language)
                 }
                 "bind" => config.bind = value.trim().to_string(),
                 "server" => config.server = value.trim().to_string(),
@@ -85,11 +96,12 @@ impl AppConfig {
         fs::write(
             path,
             format!(
-                "role={}\nbind={}\nserver={}\nedge={}\nscroll_scale={:.3}\nscroll_response={:.3}\nscroll_max_step={:.1}\nscroll_frame_ms={}\n",
+                "role={}\nlanguage={}\nbind={}\nserver={}\nedge={}\nscroll_scale={:.3}\nscroll_response={:.3}\nscroll_max_step={:.1}\nscroll_frame_ms={}\n",
                 match self.role {
                     Role::Server => "server",
                     Role::Client => "client",
                 },
+                self.language.as_str(),
                 self.bind,
                 self.server,
                 match self.edge {
@@ -102,6 +114,23 @@ impl AppConfig {
                 self.scroll_frame_ms,
             ),
         )
+    }
+}
+
+impl Language {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "zh" | "chinese" => Some(Self::Chinese),
+            "en" | "english" => Some(Self::English),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chinese => "zh",
+            Self::English => "en",
+        }
     }
 }
 
@@ -124,4 +153,18 @@ fn home_dir() -> PathBuf {
 
 fn parse_f64(value: &str, default: f64) -> f64 {
     value.trim().parse().unwrap_or(default)
+}
+
+fn default_language() -> Language {
+    let locale = std::env::var("LANG")
+        .or_else(|_| std::env::var("LC_ALL"))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if locale.starts_with("zh") {
+        Language::Chinese
+    } else if locale.starts_with("en") {
+        Language::English
+    } else {
+        Language::Chinese
+    }
 }
