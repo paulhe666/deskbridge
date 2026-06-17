@@ -9,6 +9,8 @@ use crate::input::InputSink;
 use crate::protocol::{self, ClipboardPayload, Frame, FrameKind, InputEvent};
 use crate::transport::SharedWriter;
 
+const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
+
 pub fn run(server: &str) -> std::io::Result<()> {
     eprintln!("initializing macOS input sink");
     let mut input = InputSink::new()?;
@@ -151,6 +153,7 @@ fn send_clipboard_payload(
 struct ClipboardSyncState {
     last_observed: Option<Vec<u8>>,
     suppress_next_kind: Option<ClipboardKind>,
+    suppress_until: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -167,11 +170,12 @@ impl ClipboardSyncState {
         }
 
         let kind = ClipboardKind::from_payload(payload);
-        if self.suppress_next_kind.take() == Some(kind) {
+        if self.should_suppress(kind) {
             self.last_observed = Some(encoded);
             return false;
         }
 
+        self.clear_suppression();
         self.last_observed = Some(encoded);
         true
     }
@@ -179,6 +183,28 @@ impl ClipboardSyncState {
     fn note_remote_write(&mut self, payload: &ClipboardPayload) {
         self.last_observed = Some(protocol::encode_clipboard(payload));
         self.suppress_next_kind = Some(ClipboardKind::from_payload(payload));
+        self.suppress_until = Some(Instant::now() + REMOTE_CLIPBOARD_SUPPRESS_WINDOW);
+    }
+
+    fn should_suppress(&mut self, kind: ClipboardKind) -> bool {
+        if self.suppress_next_kind != Some(kind) {
+            return false;
+        }
+        if self
+            .suppress_until
+            .map(|until| Instant::now() <= until)
+            .unwrap_or(false)
+        {
+            self.clear_suppression();
+            return true;
+        }
+        self.clear_suppression();
+        false
+    }
+
+    fn clear_suppression(&mut self) {
+        self.suppress_next_kind = None;
+        self.suppress_until = None;
     }
 }
 
