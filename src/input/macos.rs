@@ -27,7 +27,6 @@ const OPTION_KEYCODE: u16 = 58;
 const RIGHT_OPTION_KEYCODE: u16 = 61;
 const LEFT_SHIFT_KEYCODE: u16 = 56;
 const RIGHT_SHIFT_KEYCODE: u16 = 60;
-const CAPS_LOCK_KEYCODE: u16 = 57;
 const BACKSPACE_KEYCODE: u16 = 51;
 const SPACE_KEYCODE: u16 = 49;
 const NUMBER_4_KEYCODE: u16 = 21;
@@ -62,6 +61,7 @@ pub struct InputSink {
     click_tracker: ClickTracker,
     scroll: SmoothScroller,
     shift_tap_candidate: Option<u16>,
+    caps_lock_active: bool,
     last_backspace_repeat: Option<Instant>,
     backspace_down_since: Option<Instant>,
 }
@@ -85,6 +85,7 @@ impl InputSink {
             click_tracker: ClickTracker::default(),
             scroll: SmoothScroller::spawn(),
             shift_tap_candidate: None,
+            caps_lock_active: false,
             last_backspace_repeat: None,
             backspace_down_since: None,
         })
@@ -112,7 +113,7 @@ impl InputSink {
         }
         if scancode == CAPS_LOCK_SCANCODE {
             if state == KeyState::Down {
-                self.caps_lock_tap()?;
+                self.toggle_caps_lock();
             }
             return Ok(());
         }
@@ -237,27 +238,33 @@ impl InputSink {
         self.post_key_with_flags(CONTROL_KEYCODE, false, CGEventFlags::empty())
     }
 
-    fn caps_lock_tap(&self) -> std::io::Result<()> {
-        self.post_key_with_flags(CAPS_LOCK_KEYCODE, true, CGEventFlags::CGEventFlagAlphaShift)?;
-        self.post_key_with_flags(CAPS_LOCK_KEYCODE, false, CGEventFlags::empty())
+    fn toggle_caps_lock(&mut self) {
+        self.caps_lock_active = !self.caps_lock_active;
     }
 
     fn post_key(&self, keycode: u16, down: bool) -> std::io::Result<()> {
-        self.post_key_with_flags_and_repeat(
-            keycode,
-            down,
-            flags_for_pressed_keys(&self.pressed_keys),
-            false,
-        )
+        self.post_key_with_flags_and_repeat(keycode, down, self.flags_for_key(keycode), false)
     }
 
     fn post_key_repeat(&self, keycode: u16) -> std::io::Result<()> {
-        self.post_key_with_flags_and_repeat(
-            keycode,
-            true,
-            flags_for_pressed_keys(&self.pressed_keys),
-            true,
-        )
+        self.post_key_with_flags_and_repeat(keycode, true, self.flags_for_key(keycode), true)
+    }
+
+    fn flags_for_key(&self, keycode: u16) -> CGEventFlags {
+        let mut flags = flags_for_pressed_keys(&self.pressed_keys);
+        if !self.caps_lock_active {
+            return flags;
+        }
+
+        flags |= CGEventFlags::CGEventFlagAlphaShift;
+        if is_letter_keycode(keycode) {
+            if flags.contains(CGEventFlags::CGEventFlagShift) {
+                flags.remove(CGEventFlags::CGEventFlagShift);
+            } else {
+                flags |= CGEventFlags::CGEventFlagShift;
+            }
+        }
+        flags
     }
 
     fn post_key_with_flags(
@@ -677,6 +684,37 @@ fn env_u64(name: &str, default: u64) -> u64 {
 
 fn is_shift_scancode(scancode: u16) -> bool {
     matches!(scancode, LEFT_SHIFT_SCANCODE | RIGHT_SHIFT_SCANCODE)
+}
+
+fn is_letter_keycode(keycode: u16) -> bool {
+    matches!(
+        keycode,
+        0 | 1
+            | 2
+            | 3
+            | 4
+            | 5
+            | 6
+            | 7
+            | 8
+            | 9
+            | 11
+            | 12
+            | 13
+            | 14
+            | 15
+            | 16
+            | 17
+            | 31
+            | 32
+            | 34
+            | 35
+            | 37
+            | 38
+            | 40
+            | 45
+            | 46
+    )
 }
 
 fn scancode_to_macos_key(scancode: u16) -> Option<u16> {

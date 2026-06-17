@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
+use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
@@ -568,6 +570,8 @@ fn load_icon_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
 }
 
 fn apply_visual_style(ctx: &egui::Context) {
+    install_system_cjk_font(ctx);
+
     let mut visuals = egui::Visuals::light();
     visuals.panel_fill = Color32::from_rgb(246, 248, 251);
     visuals.window_fill = Color32::from_rgb(255, 255, 255);
@@ -584,6 +588,45 @@ fn apply_visual_style(ctx: &egui::Context) {
     style.spacing.button_padding = egui::vec2(12.0, 7.0);
     ctx.set_style(style);
 }
+
+fn install_system_cjk_font(ctx: &egui::Context) {
+    let Some(bytes) = read_first_existing(CJK_FONT_CANDIDATES) else {
+        eprintln!("warning: no CJK UI font found; Chinese text may render as tofu boxes");
+        return;
+    };
+
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "deskbridge-cjk".to_string(),
+        Arc::new(egui::FontData::from_owned(bytes)),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .insert(0, "deskbridge-cjk".to_string());
+    }
+    ctx.set_fonts(fonts);
+}
+
+fn read_first_existing(paths: &[&str]) -> Option<Vec<u8>> {
+    paths.iter().find_map(|path| fs::read(path).ok())
+}
+
+const CJK_FONT_CANDIDATES: &[&str] = &[
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "C:\\Windows\\Fonts\\msyh.ttc",
+    "C:\\Windows\\Fonts\\msyh.ttf",
+    "C:\\Windows\\Fonts\\msyhbd.ttc",
+    "C:\\Windows\\Fonts\\simhei.ttf",
+    "C:\\Windows\\Fonts\\simsun.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+];
 
 fn panel_frame(fill: Color32) -> egui::Frame {
     egui::Frame::new()

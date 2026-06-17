@@ -1,23 +1,58 @@
 # Deskbridge
 
-Deskbridge is a Deskflow-like bridge for Windows and macOS.
+Deskbridge is a Deskflow-like keyboard, mouse, clipboard, and file bridge for a
+Windows server and a macOS client.
 
-One binary contains:
+The project is experimental but usable for daily testing. It was developed with
+substantial assistance from OpenAI Codex for code generation, debugging,
+packaging, documentation, and iterative user testing.
 
-- GUI control panel
-- Windows server mode
-- macOS client mode
-- text, bitmap, and file clipboard sync
-- low-latency keyboard and mouse forwarding
-- tunable macOS wheel smoothing
-- Windows edge drop strip for Explorer file drops
-- native GUI file drop zone on both systems
+## Features
 
-## Install Packages
+- One binary with a bilingual GUI control panel
+- Windows server mode and macOS client mode
+- Keyboard and mouse sharing from Windows to macOS
+- Windows-style modifier mapping for common shortcuts
+- Caps Lock state emulation for remote macOS letter input
+- macOS screenshot mapping through the Windows Print Screen key
+- Tunable macOS wheel smoothing
+- Bidirectional clipboard sync for text, bitmap images, and files
+- GUI file drop zone on both systems
+- Windows edge drop strip for Explorer file transfer
+- macOS `.app`, `.pkg`, and Windows Inno Setup packaging support
+- macOS `.icns` icon and Windows `.ico` installer/shortcut icon support
+
+## Status
+
+This repository targets one practical setup first:
+
+- Server: Windows
+- Client: macOS
+- Transport: TCP over LAN, hotspot LAN, or Tailscale
+
+Direct drag-and-drop of a file across the screen edge into an arbitrary Finder or
+Explorer window is not fully implemented. File transfer currently works through
+copy/paste, the GUI drop zone, and the Windows edge drop strip.
+
+## Build Requirements
 
 ### macOS
 
-Build the app and installer on macOS:
+- Rust toolchain
+- Xcode Command Line Tools
+- `pkgbuild` and `iconutil`, included with macOS developer tools
+
+### Windows
+
+- Rust toolchain
+- Visual Studio Build Tools with `Desktop development with C++`
+- Windows SDK, for `rc.exe` if you want the icon embedded directly into
+  `deskbridge.exe`
+- Inno Setup 6, if you want the Windows installer
+
+## Build Packages
+
+### macOS
 
 ```bash
 ./scripts/package_macos.sh
@@ -33,27 +68,57 @@ Outputs:
 Install by opening `Deskbridge-0.1.0.pkg`, or copy `Deskbridge.app` to
 `/Applications`.
 
-Uninstall by opening `Uninstall Deskbridge.command`.
-
 ### Windows
-
-Build the app and installer on Windows PowerShell:
 
 ```powershell
 .\scripts\package_windows.ps1
 ```
 
-This requires Rust and Inno Setup 6. The installer is written to:
+The installer is written to:
 
 ```text
 dist\windows\Deskbridge-Setup-0.1.0.exe
 ```
 
-The Windows installer creates a normal uninstall entry. You can also run:
+The installer creates a normal uninstall entry. You can also run:
 
 ```powershell
 .\scripts\uninstall_windows.ps1
 ```
+
+## Embed The Windows Icon
+
+The repository includes:
+
+- `assets/deskbridge.ico`
+- `packaging/windows/deskbridge.rc`
+- `build.rs`
+
+If `rc.exe` is available during `cargo build --release`, the icon is embedded in
+`target\release\deskbridge.exe` automatically.
+
+Open one of these from the Start menu:
+
+```text
+x64 Native Tools Command Prompt for VS 2022
+```
+
+or:
+
+```text
+Developer PowerShell for VS 2022
+```
+
+Then run:
+
+```powershell
+where rc.exe
+cargo build --release
+```
+
+If `rc.exe` is not found, install Visual Studio Build Tools and include
+`Desktop development with C++` plus a Windows SDK. The installer and shortcuts
+can still use `assets\deskbridge.ico` even when the exe icon is not embedded.
 
 ## GUI Usage
 
@@ -79,6 +144,10 @@ The GUI saves config to:
 ~/.deskbridge/config.ini
 ```
 
+The GUI supports Chinese and English. If Chinese text renders as boxes, ensure
+the operating system has a CJK UI font such as Hiragino Sans GB, STHeiti,
+Microsoft YaHei, SimHei, or Noto Sans CJK.
+
 ## macOS Permissions
 
 The macOS app needs Accessibility permission to inject keyboard and mouse input.
@@ -90,31 +159,6 @@ System Settings -> Privacy & Security -> Accessibility
 ```
 
 Add and enable `Deskbridge.app`, or the terminal app if running from terminal.
-
-## File Transfer And Drag
-
-File copy/paste works both ways:
-
-- Explorer copy -> Finder paste
-- Finder copy -> Explorer paste
-
-GUI native drop works both ways:
-
-- Drag files onto the Deskbridge GUI window.
-- The app publishes the files to the local file clipboard.
-- The running service sends them to the other computer.
-
-Windows edge drop works one way:
-
-- On Windows, drag Explorer files to the semi-transparent edge strip and release.
-- The files are sent to macOS and written to the Finder pasteboard.
-
-Current limit:
-
-- Directly dragging a file across the screen edge and dropping into an arbitrary
-  Finder or Explorer window is not fully implemented yet.
-- That final behavior requires a deeper OLE/AppKit drag source bridge and needs
-  real Windows and macOS interactive testing.
 
 ## Command Line
 
@@ -142,22 +186,214 @@ DESKBRIDGE_SCROLL_FRAME_MS=8 \
 deskbridge client --server WINDOWS_IP:24920
 ```
 
-## Scroll Tuning
-
-Useful values:
-
-- `DESKBRIDGE_SCROLL_SCALE`: total distance per wheel detent
-- `DESKBRIDGE_SCROLL_RESPONSE`: how quickly pending scroll distance is released
-- `DESKBRIDGE_SCROLL_MAX_STEP`: max pixels per animation frame
-- `DESKBRIDGE_SCROLL_FRAME_MS`: scroll animation frame interval
-
-For a tactile wheel, increase `distance` first. If fast multi-notch scrolling
-feels delayed, increase `response`. If pages jump too sharply, lower `max step`.
-
 ## Low Latency Notes
 
-Use a direct LAN IP when possible. Avoid relay paths for keyboard and mouse.
+Use a direct LAN IP when possible. Relay paths can noticeably affect keyboard,
+mouse, and wheel responsiveness.
 
-Windows input hooks queue events to a sender thread instead of writing to TCP in
-the hook callback. Mouse movement and wheel deltas are coalesced at a 4ms flush
-interval; keyboard and button events flush immediately.
+Deskbridge coalesces high-frequency mouse and wheel deltas and keeps keyboard and
+button events immediate. File transfer chunks are intentionally modest so large
+clipboard/file transfers do not monopolize the input stream for too long.
+
+## License
+
+No license has been selected yet. Add one before accepting external
+contributions.
+
+---
+
+# Deskbridge 中文说明
+
+Deskbridge 是一个类似 Deskflow 的跨设备工具，目标是让 Windows 作为服务端、
+macOS 作为客户端，实现键鼠共享、剪贴板同步和文件投递。
+
+本项目仍然是实验性质，但已经可以用于日常测试。项目开发过程中大量使用了
+OpenAI Codex 辅助完成代码生成、调试、打包、文档编写和迭代测试。
+
+## 功能
+
+- 一个二进制文件，内置中英文 GUI 控制面板
+- Windows 服务端模式和 macOS 客户端模式
+- Windows 控制 macOS 的键盘和鼠标
+- 常用快捷键按 Windows 逻辑映射到 macOS
+- 远程 Caps Lock 状态模拟，用于 macOS 字母大小写输入
+- Windows Print Screen 映射到 macOS 截图
+- 可调节的 macOS 滚轮平滑参数
+- 文本、图片、文件三类剪贴板双向同步
+- 两端 GUI 文件拖放投递区
+- Windows 屏幕边缘文件投递条
+- macOS `.app`、`.pkg` 和 Windows Inno Setup 打包
+- macOS `.icns` 图标和 Windows `.ico` 安装器/快捷方式图标
+
+## 当前状态
+
+当前优先支持这一种实际使用场景：
+
+- 服务端：Windows
+- 客户端：macOS
+- 传输：局域网、热点局域网或 Tailscale TCP 连接
+
+目前还没有完整实现“把文件从一台电脑直接拖过屏幕边缘并放到另一台电脑的
+任意 Finder/Explorer 窗口”。现在可用的是复制粘贴、GUI 拖放投递区，以及
+Windows 边缘投递条。
+
+## 构建依赖
+
+### macOS
+
+- Rust 工具链
+- Xcode Command Line Tools
+- macOS 开发工具自带的 `pkgbuild` 和 `iconutil`
+
+### Windows
+
+- Rust 工具链
+- Visual Studio Build Tools，并勾选 `Desktop development with C++`
+- Windows SDK。如果需要把图标嵌入 `deskbridge.exe`，需要其中的 `rc.exe`
+- Inno Setup 6。如果需要构建 Windows 安装包
+
+## 打包
+
+### macOS
+
+```bash
+./scripts/package_macos.sh
+```
+
+输出：
+
+- `dist/macos/Deskbridge.app`
+- `dist/macos/Deskbridge-0.1.0.pkg`
+- `dist/macos/Deskbridge-macOS-app.zip`
+- `dist/macos/Uninstall Deskbridge.command`
+
+可以打开 `Deskbridge-0.1.0.pkg` 安装，也可以把 `Deskbridge.app` 复制到
+`/Applications`。
+
+### Windows
+
+```powershell
+.\scripts\package_windows.ps1
+```
+
+安装器输出到：
+
+```text
+dist\windows\Deskbridge-Setup-0.1.0.exe
+```
+
+安装器会创建正常的卸载项，也可以运行：
+
+```powershell
+.\scripts\uninstall_windows.ps1
+```
+
+## Windows 图标嵌入
+
+仓库已经包含：
+
+- `assets/deskbridge.ico`
+- `packaging/windows/deskbridge.rc`
+- `build.rs`
+
+如果构建时可以找到 `rc.exe`，执行 `cargo build --release` 会自动把图标嵌入
+`target\release\deskbridge.exe`。
+
+从开始菜单打开：
+
+```text
+x64 Native Tools Command Prompt for VS 2022
+```
+
+或者：
+
+```text
+Developer PowerShell for VS 2022
+```
+
+然后运行：
+
+```powershell
+where rc.exe
+cargo build --release
+```
+
+如果找不到 `rc.exe`，安装 Visual Studio Build Tools，并勾选
+`Desktop development with C++` 和 Windows SDK。即使 exe 本体没有嵌入图标，
+安装器和快捷方式也仍然会使用 `assets\deskbridge.ico`。
+
+## GUI 使用
+
+直接启动 `Deskbridge`。
+
+Windows 端：
+
+1. 角色选择 `服务端`
+2. 监听地址保持 `0.0.0.0:24920`
+3. 如果 Mac 在 Windows 屏幕右侧，边缘选择 `右侧`
+4. 点击 `启动`
+
+macOS 端：
+
+1. 角色选择 `客户端`
+2. 服务端地址填写 `WINDOWS_IP:24920`
+3. 根据手感调整滚轮参数
+4. 点击 `启动`
+
+配置文件位置：
+
+```text
+~/.deskbridge/config.ini
+```
+
+如果中文显示成方框，请确认系统存在 CJK 字体，例如 Hiragino Sans GB、
+STHeiti、微软雅黑、黑体或 Noto Sans CJK。
+
+## macOS 权限
+
+macOS 端需要辅助功能权限来注入键盘和鼠标事件。
+
+打开：
+
+```text
+系统设置 -> 隐私与安全性 -> 辅助功能
+```
+
+添加并启用 `Deskbridge.app`。如果从终端运行，则需要给对应终端应用权限。
+
+## 命令行
+
+GUI 内部实际启动的也是这些命令。
+
+Windows 服务端：
+
+```powershell
+deskbridge.exe server --bind 0.0.0.0:24920 --edge right
+```
+
+macOS 客户端：
+
+```bash
+deskbridge client --server WINDOWS_IP:24920
+```
+
+带滚轮参数的 macOS 客户端：
+
+```bash
+DESKBRIDGE_SCROLL_SCALE=1.35 \
+DESKBRIDGE_SCROLL_RESPONSE=0.38 \
+DESKBRIDGE_SCROLL_MAX_STEP=120 \
+DESKBRIDGE_SCROLL_FRAME_MS=8 \
+deskbridge client --server WINDOWS_IP:24920
+```
+
+## 低延迟建议
+
+尽量使用直连局域网 IP。中继路径会明显影响键盘、鼠标和滚轮响应。
+
+Deskbridge 会合并高频鼠标和滚轮 delta，并让键盘、鼠标按键事件立即发送。
+文件传输分块刻意保持较小，避免大文件剪贴板/文件传输长时间占用输入流。
+
+## 许可证
+
+目前还没有选择许可证。接受外部贡献前建议先补充开源许可证。
