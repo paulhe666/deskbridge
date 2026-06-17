@@ -20,6 +20,7 @@ RES="$APP/Contents/Resources"
 
 mkdir -p "$(dirname "$BIN")" "$RES"
 cp "$ROOT/target/release/deskbridge" "$BIN"
+cp "$ROOT/assets/deskbridge.icns" "$RES/Deskbridge.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -36,6 +37,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <string>Deskbridge</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>Deskbridge</string>
   <key>CFBundleShortVersionString</key>
   <string>0.1.0</string>
   <key>CFBundleVersion</key>

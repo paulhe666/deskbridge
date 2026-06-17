@@ -13,6 +13,7 @@ DefaultGroupName=Deskbridge
 DisableProgramGroupPage=yes
 OutputDir=..\..\dist\windows
 OutputBaseFilename=Deskbridge-Setup-{#MyAppVersion}
+SetupIconFile=..\..\assets\deskbridge.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -23,10 +24,11 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 [Files]
 Source: "..\..\target\release\deskbridge.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\assets\deskbridge.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Deskbridge"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\Deskbridge CLI"; Filename: "{cmd}"; Parameters: "/K ""{app}\{#MyAppExeName} --help"""
+Name: "{group}\Deskbridge"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\deskbridge.ico"
+Name: "{group}\Deskbridge CLI"; Filename: "{cmd}"; Parameters: "/K ""{app}\{#MyAppExeName} --help"""; IconFilename: "{app}\deskbridge.ico"
 Name: "{group}\Uninstall Deskbridge"; Filename: "{uninstallexe}"
 
 [Run]

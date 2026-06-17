@@ -287,14 +287,14 @@ impl InputSink {
     fn mouse_enter(&mut self, x: i32, y: i32) -> std::io::Result<()> {
         self.screen_size = screen_size_i32();
         self.set_mouse_position(x, y);
-        self.post_pointer_motion()
+        self.post_pointer_motion(0, 0)
     }
 
     fn mouse_delta(&mut self, dx: i32, dy: i32) -> std::io::Result<()> {
         let x = self.mouse_position.x as i32 + dx;
         let y = self.mouse_position.y as i32 + dy;
         self.set_mouse_position(x, y);
-        self.post_pointer_motion()
+        self.post_pointer_motion(dx, dy)
     }
 
     fn set_mouse_position(&mut self, x: i32, y: i32) {
@@ -303,18 +303,13 @@ impl InputSink {
         self.mouse_position = CGPoint::new(x as f64, y as f64);
     }
 
-    fn post_pointer_motion(&self) -> std::io::Result<()> {
+    fn post_pointer_motion(&self, dx: i32, dy: i32) -> std::io::Result<()> {
         if let Some((drag_ty, button)) = self.mouse_buttons.drag_event() {
-            let _ = CGDisplay::warp_mouse_cursor_position(self.mouse_position);
-            self.post_mouse_event(drag_ty, button, 0)?;
+            self.post_mouse_event(drag_ty, button, 0, dx, dy)?;
             return Ok(());
         }
 
-        if let Err(code) = CGDisplay::warp_mouse_cursor_position(self.mouse_position) {
-            eprintln!("cursor warp failed ({code}); falling back to mouse move event");
-            self.post_mouse_event(CGEventType::MouseMoved, CGMouseButton::Left, 0)?;
-        }
-        Ok(())
+        self.post_mouse_event(CGEventType::MouseMoved, CGMouseButton::Left, 0, dx, dy)
     }
 
     fn post_mouse_event(
@@ -322,11 +317,15 @@ impl InputSink {
         event_type: CGEventType,
         button: CGMouseButton,
         click_count: i64,
+        dx: i32,
+        dy: i32,
     ) -> std::io::Result<()> {
         let event =
             CGEvent::new_mouse_event(self.source.clone(), event_type, self.mouse_position, button)
                 .map_err(|_| event_err("failed to create mouse event"))?;
         event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_count);
+        event.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_X, dx as i64);
+        event.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y, dy as i64);
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -353,7 +352,13 @@ impl InputSink {
         let click_count = self
             .click_tracker
             .click_count(button, down, self.mouse_position);
-        self.post_mouse_event(if down { down_ty } else { up_ty }, button, click_count)?;
+        self.post_mouse_event(
+            if down { down_ty } else { up_ty },
+            button,
+            click_count,
+            0,
+            0,
+        )?;
         Ok(())
     }
 

@@ -1,4 +1,5 @@
 use std::net::TcpStream;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,10 +11,11 @@ use crate::protocol::{self, ClipboardPayload, Frame, FrameKind, InputEvent};
 use crate::transport::SharedWriter;
 
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
+const INPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(2);
 
 pub fn run(server: &str) -> std::io::Result<()> {
     eprintln!("initializing macOS input sink");
-    let mut input = InputSink::new()?;
+    let input = InputApplier::spawn()?;
     eprintln!("initializing macOS clipboard");
     let mut clipboard = Clipboard::new()?;
     eprintln!("connecting to {server}");
@@ -40,7 +42,7 @@ pub fn run(server: &str) -> std::io::Result<()> {
             FrameKind::Input => {
                 let event = protocol::decode_input(&frame.payload)?;
                 input_log.observe(&event);
-                input.apply(event)?;
+                input.send(event);
             }
             FrameKind::Clipboard => {
                 let payload = protocol::decode_clipboard(&frame.payload)?;
@@ -71,6 +73,190 @@ pub fn run(server: &str) -> std::io::Result<()> {
             _ => {}
         }
     }
+}
+
+#[derive(Clone)]
+struct InputApplier {
+    sender: Sender<InputEvent>,
+}
+
+impl InputApplier {
+    fn spawn() -> std::io::Result<Self> {
+        let (sender, receiver) = mpsc::channel();
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || match InputSink::new() {
+            Ok(mut input) => {
+                let _ = ready_sender.send(Ok(()));
+                input_worker_loop(&mut input, receiver);
+            }
+            Err(e) => {
+                let _ = ready_sender.send(Err(e.to_string()));
+            }
+        });
+        match ready_receiver.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
+            Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e)),
+        }
+        Ok(Self { sender })
+    }
+
+    fn send(&self, event: InputEvent) {
+        if let Err(e) = self.sender.send(event) {
+            eprintln!("input apply queue closed: {e}");
+        }
+    }
+}
+
+fn input_worker_loop(input: &mut InputSink, receiver: Receiver<InputEvent>) {
+    let mut pending_delta = (0i32, 0i32);
+    let mut pending_wheel = (0i32, 0i32);
+    let mut pending_since = None;
+
+    loop {
+        match receiver.recv_timeout(input_flush_timeout(pending_since)) {
+            Ok(event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. })) => {
+                queue_pending_input(
+                    event,
+                    &mut pending_delta,
+                    &mut pending_wheel,
+                    &mut pending_since,
+                );
+                drain_queued_input(
+                    input,
+                    &receiver,
+                    &mut pending_delta,
+                    &mut pending_wheel,
+                    &mut pending_since,
+                );
+            }
+            Ok(event) => {
+                flush_pending_input(
+                    input,
+                    &mut pending_delta,
+                    &mut pending_wheel,
+                    &mut pending_since,
+                );
+                apply_input_event(input, event);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                flush_pending_input(
+                    input,
+                    &mut pending_delta,
+                    &mut pending_wheel,
+                    &mut pending_since,
+                );
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn queue_pending_input(
+    event: InputEvent,
+    pending_delta: &mut (i32, i32),
+    pending_wheel: &mut (i32, i32),
+    pending_since: &mut Option<Instant>,
+) {
+    if pending_since.is_none() {
+        *pending_since = Some(Instant::now());
+    }
+    match event {
+        InputEvent::MouseDelta { dx, dy } => {
+            pending_delta.0 += dx;
+            pending_delta.1 += dy;
+        }
+        InputEvent::MouseWheel {
+            horizontal,
+            vertical,
+        } => {
+            pending_wheel.0 += horizontal as i32;
+            pending_wheel.1 += vertical as i32;
+        }
+        _ => {}
+    }
+}
+
+fn drain_queued_input(
+    input: &mut InputSink,
+    receiver: &Receiver<InputEvent>,
+    pending_delta: &mut (i32, i32),
+    pending_wheel: &mut (i32, i32),
+    pending_since: &mut Option<Instant>,
+) {
+    loop {
+        match receiver.try_recv() {
+            Ok(event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. })) => {
+                queue_pending_input(event, pending_delta, pending_wheel, pending_since);
+            }
+            Ok(event) => {
+                flush_pending_input(input, pending_delta, pending_wheel, pending_since);
+                apply_input_event(input, event);
+                return;
+            }
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => return,
+        }
+    }
+
+    if pending_ready(*pending_since) {
+        flush_pending_input(input, pending_delta, pending_wheel, pending_since);
+    }
+}
+
+fn input_flush_timeout(pending_since: Option<Instant>) -> Duration {
+    pending_since
+        .map(|since| {
+            INPUT_FLUSH_INTERVAL
+                .checked_sub(since.elapsed())
+                .unwrap_or(Duration::ZERO)
+        })
+        .unwrap_or(INPUT_FLUSH_INTERVAL)
+}
+
+fn pending_ready(pending_since: Option<Instant>) -> bool {
+    pending_since
+        .map(|since| since.elapsed() >= INPUT_FLUSH_INTERVAL)
+        .unwrap_or(false)
+}
+
+fn flush_pending_input(
+    input: &mut InputSink,
+    pending_delta: &mut (i32, i32),
+    pending_wheel: &mut (i32, i32),
+    pending_since: &mut Option<Instant>,
+) {
+    if pending_delta.0 != 0 || pending_delta.1 != 0 {
+        apply_input_event(
+            input,
+            InputEvent::MouseDelta {
+                dx: pending_delta.0,
+                dy: pending_delta.1,
+            },
+        );
+        *pending_delta = (0, 0);
+    }
+    if pending_wheel.0 != 0 || pending_wheel.1 != 0 {
+        apply_input_event(
+            input,
+            InputEvent::MouseWheel {
+                horizontal: clamp_i16(pending_wheel.0),
+                vertical: clamp_i16(pending_wheel.1),
+            },
+        );
+        *pending_wheel = (0, 0);
+    }
+    *pending_since = None;
+}
+
+fn apply_input_event(input: &mut InputSink, event: InputEvent) {
+    if let Err(e) = input.apply(event) {
+        eprintln!("input apply failed: {e}");
+    }
+}
+
+fn clamp_i16(value: i32) -> i16 {
+    value.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
 struct InputLog {
