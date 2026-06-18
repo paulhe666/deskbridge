@@ -50,7 +50,7 @@ https://github.com/paulhe666/deskbridge/releases
 
 ### Windows
 
-1. Download `Deskbridge-Setup-1.0.1.exe`.
+1. Download `Deskbridge-Setup-1.0.2.exe`.
 2. Open the installer and follow the setup wizard.
 3. Start `Deskbridge` from the Start menu.
 4. If Windows Firewall asks for permission, allow Deskbridge on private
@@ -58,7 +58,7 @@ https://github.com/paulhe666/deskbridge/releases
 
 ### macOS
 
-1. Download `Deskbridge-1.0.1.pkg`.
+1. Download `Deskbridge-1.0.2.pkg`.
 2. Open the package and install Deskbridge.
 3. Open `System Settings -> Privacy & Security -> Accessibility`.
 4. Add and enable `Deskbridge.app`.
@@ -244,14 +244,14 @@ https://github.com/paulhe666/deskbridge/releases
 
 ### Windows
 
-1. 下载 `Deskbridge-Setup-1.0.1.exe`。
+1. 下载 `Deskbridge-Setup-1.0.2.exe`。
 2. 双击安装包并按安装向导安装。
 3. 从开始菜单启动 `Deskbridge`。
 4. 如果 Windows 防火墙弹窗，请允许 Deskbridge 访问专用网络。
 
 ### macOS
 
-1. 下载 `Deskbridge-1.0.1.pkg`。
+1. 下载 `Deskbridge-1.0.2.pkg`。
 2. 双击 pkg 安装。
 3. 打开 `系统设置 -> 隐私与安全性 -> 辅助功能`。
 4. 添加并启用 `Deskbridge.app`。
