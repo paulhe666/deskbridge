@@ -72,6 +72,7 @@ fn build_macos_native() {
         .compile("deskbridge_macos_status_item");
 
     println!("cargo:rustc-link-lib=framework=ApplicationServices");
+    println!("cargo:rustc-link-lib=framework=Carbon");
     println!("cargo:rustc-link-lib=framework=IOKit");
     println!("cargo:rustc-link-lib=framework=AppKit");
 }

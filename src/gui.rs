@@ -15,7 +15,7 @@ use eframe::egui;
 use egui::{Color32, RichText, Stroke};
 
 use crate::clipboard::{Clipboard, ClipboardApi};
-use crate::config::{AppConfig, Language, Role};
+use crate::config::{AppConfig, Language, ModifierTarget, Role};
 use crate::protocol::ClipboardPayload;
 use crate::server::Edge;
 
@@ -65,6 +65,7 @@ struct DeskbridgeApp {
     status_commands: Receiver<StatusMenuCommand>,
     status: String,
     icon: Option<egui::TextureHandle>,
+    show_settings: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -121,6 +122,7 @@ impl DeskbridgeApp {
             service: ServiceProcess::default(),
             status_commands,
             icon,
+            show_settings: false,
         }
     }
 
@@ -253,6 +255,7 @@ impl eframe::App for DeskbridgeApp {
                         });
                 }
             });
+        self.draw_settings_window(ctx, running);
     }
 }
 
@@ -399,6 +402,10 @@ impl DeskbridgeApp {
                     {
                         self.start_service();
                     }
+                    ui.add_space(8.0);
+                    if secondary_button(ui, tr(self.config.language, "settings"), true).clicked() {
+                        self.show_settings = true;
+                    }
                 });
             });
             ui.add_space(14.0);
@@ -450,6 +457,90 @@ impl DeskbridgeApp {
             ui.add_space(12.0);
             ui.label(RichText::new(&self.status).color(TEXT));
         });
+    }
+
+    fn draw_settings_window(&mut self, ctx: &egui::Context, running: bool) {
+        if !self.show_settings {
+            return;
+        }
+
+        let mut open = self.show_settings;
+        let mut save_clicked = false;
+        let mut close_clicked = false;
+        egui::Window::new(tr(self.config.language, "settings"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(430.0)
+            .show(ctx, |ui| {
+                ui.label(RichText::new(tr(self.config.language, "modifier_mapping")).color(TEXT));
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(tr(self.config.language, "modifier_mapping_hint")).color(MUTED),
+                );
+                ui.add_space(14.0);
+
+                modifier_mapping_row(
+                    ui,
+                    self.config.language,
+                    tr(self.config.language, "mac_command_key"),
+                    &mut self.config.mac_command_mapping,
+                );
+                modifier_mapping_row(
+                    ui,
+                    self.config.language,
+                    tr(self.config.language, "mac_control_key"),
+                    &mut self.config.mac_control_mapping,
+                );
+                modifier_mapping_row(
+                    ui,
+                    self.config.language,
+                    tr(self.config.language, "mac_option_key"),
+                    &mut self.config.mac_option_mapping,
+                );
+
+                if running {
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(tr(self.config.language, "restart_required")).color(WARNING),
+                    );
+                }
+
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if primary_button(ui, tr(self.config.language, "save_settings"), true)
+                            .clicked()
+                        {
+                            save_clicked = true;
+                        }
+                        ui.add_space(8.0);
+                        if secondary_button(ui, tr(self.config.language, "close"), true).clicked() {
+                            close_clicked = true;
+                        }
+                    });
+                });
+            });
+
+        if save_clicked {
+            match self.config.save() {
+                Ok(()) => {
+                    self.status = if running {
+                        tr(self.config.language, "config_saved_restart").to_string()
+                    } else {
+                        tr(self.config.language, "config_saved").to_string()
+                    };
+                    open = false;
+                }
+                Err(e) => {
+                    self.status = format!("{}: {e}", tr(self.config.language, "save_failed"));
+                }
+            }
+        }
+        if close_clicked {
+            open = false;
+        }
+        self.show_settings = open;
     }
 
     fn draw_drop_zone_inline(&mut self, ui: &mut egui::Ui) {
@@ -752,6 +843,19 @@ impl ServiceProcess {
                         Edge::Left => "left",
                         Edge::Right => "right",
                     });
+                command
+                    .env(
+                        "DESKBRIDGE_MAC_COMMAND_MAPPING",
+                        config.mac_command_mapping.as_str(),
+                    )
+                    .env(
+                        "DESKBRIDGE_MAC_CONTROL_MAPPING",
+                        config.mac_control_mapping.as_str(),
+                    )
+                    .env(
+                        "DESKBRIDGE_MAC_OPTION_MAPPING",
+                        config.mac_option_mapping.as_str(),
+                    );
             }
             Role::Client => {
                 command.arg("client").arg("--server").arg(&config.server);
@@ -1176,6 +1280,47 @@ fn compact_slider(
     });
 }
 
+fn modifier_mapping_row(
+    ui: &mut egui::Ui,
+    language: Language,
+    label: &str,
+    target: &mut ModifierTarget,
+) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(34.0);
+        ui.label(RichText::new(label).color(TEXT));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            egui::ComboBox::from_id_salt(label)
+                .width(150.0)
+                .selected_text(modifier_target_label(language, *target))
+                .show_ui(ui, |ui| {
+                    for candidate in [
+                        ModifierTarget::Control,
+                        ModifierTarget::Meta,
+                        ModifierTarget::Alt,
+                        ModifierTarget::Disabled,
+                    ] {
+                        ui.selectable_value(
+                            target,
+                            candidate,
+                            modifier_target_label(language, candidate),
+                        );
+                    }
+                });
+        });
+    });
+    ui.add_space(6.0);
+}
+
+fn modifier_target_label(language: Language, target: ModifierTarget) -> &'static str {
+    match target {
+        ModifierTarget::Control => tr(language, "map_to_control"),
+        ModifierTarget::Meta => tr(language, "map_to_win"),
+        ModifierTarget::Alt => tr(language, "map_to_alt"),
+        ModifierTarget::Disabled => tr(language, "map_disabled"),
+    }
+}
+
 fn status_row(ui: &mut egui::Ui, label: &str, value: &str, ok: bool) {
     egui::Frame::new()
         .fill(Color32::from_rgb(248, 250, 252))
@@ -1322,17 +1467,32 @@ fn tr(language: Language, key: &str) -> &'static str {
             "connection" => "连接",
             "client" => "客户端",
             "server" => "服务端",
-            "server_address" => "Windows 服务端地址",
+            "server_address" => "服务端地址",
             "bind_address" => "监听地址",
-            "mac_edge" => "macOS 位于 Windows 的哪一侧",
+            "mac_edge" => "客户端位于本机哪一侧",
             "left" => "左侧",
             "right" => "右侧",
             "runtime" => "运行",
             "start_connection" => "启动连接",
             "stop_connection" => "停止连接",
+            "settings" => "设置",
+            "close" => "关闭",
             "save_config" => "保存配置",
+            "save_settings" => "保存设置",
             "command" => "当前命令",
-            "scroll" => "macOS 滚轮",
+            "scroll" => "滚轮",
+            "modifier_mapping" => "macOS 服务端修饰键映射",
+            "modifier_mapping_hint" => {
+                "当 macOS 作为服务端控制 Windows 时，选择这些物理按键发送到 Windows 的行为。"
+            }
+            "mac_command_key" => "Command 键",
+            "mac_control_key" => "Control 键",
+            "mac_option_key" => "Option 键",
+            "map_to_control" => "Ctrl",
+            "map_to_win" => "Win",
+            "map_to_alt" => "Alt",
+            "map_disabled" => "禁用",
+            "restart_required" => "当前服务正在运行，保存后需重启服务才会生效。",
             "distance" => "距离",
             "response" => "响应",
             "max_step" => "最大步长",
@@ -1348,6 +1508,7 @@ fn tr(language: Language, key: &str) -> &'static str {
             "service_started" => "服务已启动",
             "service_stopped" => "服务已停止",
             "config_saved" => "配置已保存",
+            "config_saved_restart" => "配置已保存，重启服务后生效",
             "start_failed" => "启动失败",
             "stop_failed" => "停止失败",
             "save_failed" => "保存失败",
@@ -1375,17 +1536,34 @@ fn tr(language: Language, key: &str) -> &'static str {
             "connection" => "Connection",
             "client" => "Client",
             "server" => "Server",
-            "server_address" => "Windows server address",
+            "server_address" => "Server address",
             "bind_address" => "Bind address",
-            "mac_edge" => "macOS screen edge",
+            "mac_edge" => "Client screen side",
             "left" => "Left",
             "right" => "Right",
             "runtime" => "Runtime",
             "start_connection" => "Start connection",
             "stop_connection" => "Stop connection",
+            "settings" => "Settings",
+            "close" => "Close",
             "save_config" => "Save config",
+            "save_settings" => "Save settings",
             "command" => "Current command",
-            "scroll" => "macOS Scroll",
+            "scroll" => "Scroll",
+            "modifier_mapping" => "macOS server modifier mapping",
+            "modifier_mapping_hint" => {
+                "Choose what these physical keys send to Windows when this Mac runs as the server."
+            }
+            "mac_command_key" => "Command key",
+            "mac_control_key" => "Control key",
+            "mac_option_key" => "Option key",
+            "map_to_control" => "Ctrl",
+            "map_to_win" => "Win",
+            "map_to_alt" => "Alt",
+            "map_disabled" => "Disabled",
+            "restart_required" => {
+                "The service is running. Restart it for saved settings to take effect."
+            }
             "distance" => "Distance",
             "response" => "Response",
             "max_step" => "Max step",
@@ -1405,6 +1583,7 @@ fn tr(language: Language, key: &str) -> &'static str {
             "service_started" => "Service started",
             "service_stopped" => "Service stopped",
             "config_saved" => "Config saved",
+            "config_saved_restart" => "Config saved; restart the service to apply",
             "start_failed" => "Failed to start",
             "stop_failed" => "Failed to stop",
             "save_failed" => "Failed to save",

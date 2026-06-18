@@ -15,6 +15,14 @@ pub enum Language {
     English,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModifierTarget {
+    Control,
+    Meta,
+    Alt,
+    Disabled,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub role: Role,
@@ -26,6 +34,9 @@ pub struct AppConfig {
     pub scroll_response: f64,
     pub scroll_max_step: f64,
     pub scroll_frame_ms: u64,
+    pub mac_command_mapping: ModifierTarget,
+    pub mac_control_mapping: ModifierTarget,
+    pub mac_option_mapping: ModifierTarget,
 }
 
 impl Default for AppConfig {
@@ -40,6 +51,9 @@ impl Default for AppConfig {
             scroll_response: 0.38,
             scroll_max_step: 120.0,
             scroll_frame_ms: 8,
+            mac_command_mapping: ModifierTarget::Control,
+            mac_control_mapping: ModifierTarget::Control,
+            mac_option_mapping: ModifierTarget::Alt,
         }
     }
 }
@@ -82,6 +96,18 @@ impl AppConfig {
                 "scroll_frame_ms" => {
                     config.scroll_frame_ms = value.trim().parse().unwrap_or(config.scroll_frame_ms)
                 }
+                "mac_command_mapping" => {
+                    config.mac_command_mapping =
+                        ModifierTarget::parse(value.trim()).unwrap_or(config.mac_command_mapping)
+                }
+                "mac_control_mapping" => {
+                    config.mac_control_mapping =
+                        ModifierTarget::parse(value.trim()).unwrap_or(config.mac_control_mapping)
+                }
+                "mac_option_mapping" => {
+                    config.mac_option_mapping =
+                        ModifierTarget::parse(value.trim()).unwrap_or(config.mac_option_mapping)
+                }
                 _ => {}
             }
         }
@@ -96,7 +122,7 @@ impl AppConfig {
         fs::write(
             path,
             format!(
-                "role={}\nlanguage={}\nbind={}\nserver={}\nedge={}\nscroll_scale={:.3}\nscroll_response={:.3}\nscroll_max_step={:.1}\nscroll_frame_ms={}\n",
+                "role={}\nlanguage={}\nbind={}\nserver={}\nedge={}\nscroll_scale={:.3}\nscroll_response={:.3}\nscroll_max_step={:.1}\nscroll_frame_ms={}\nmac_command_mapping={}\nmac_control_mapping={}\nmac_option_mapping={}\n",
                 match self.role {
                     Role::Server => "server",
                     Role::Client => "client",
@@ -112,6 +138,9 @@ impl AppConfig {
                 self.scroll_response,
                 self.scroll_max_step,
                 self.scroll_frame_ms,
+                self.mac_command_mapping.as_str(),
+                self.mac_control_mapping.as_str(),
+                self.mac_option_mapping.as_str(),
             ),
         )
     }
@@ -130,6 +159,27 @@ impl Language {
         match self {
             Self::Chinese => "zh",
             Self::English => "en",
+        }
+    }
+}
+
+impl ModifierTarget {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "control" | "ctrl" => Some(Self::Control),
+            "meta" | "win" | "windows" | "command" => Some(Self::Meta),
+            "alt" | "option" => Some(Self::Alt),
+            "disabled" | "none" | "off" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Control => "control",
+            Self::Meta => "meta",
+            Self::Alt => "alt",
+            Self::Disabled => "disabled",
         }
     }
 }

@@ -86,8 +86,8 @@ fn print_usage() {
   deskbridge gui
 
 Goal:
-  Windows server + macOS client keyboard/mouse sharing, text/image/file clipboard,
-  low-latency input, and Windows edge file-drop transfer."
+  Windows/macOS keyboard and mouse sharing, text/image/file clipboard,
+  low-latency input, and GUI file transfer."
     );
 }
 

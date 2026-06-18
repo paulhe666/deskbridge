@@ -1,9 +1,13 @@
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(not(any(windows, target_os = "macos")))]
 mod unsupported;
 #[cfg(windows)]
 mod windows;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub use macos::run;
+#[cfg(not(any(windows, target_os = "macos")))]
 pub use unsupported::run;
 #[cfg(windows)]
 pub use windows::run;

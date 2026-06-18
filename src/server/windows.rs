@@ -42,11 +42,12 @@ use crate::transport::SharedWriter;
 const DEFAULT_REMOTE_WIDTH: i32 = 1366;
 const DEFAULT_REMOTE_HEIGHT: i32 = 768;
 const WHEEL_PIXELS_PER_DETENT: i32 = 120;
-const DEFAULT_INPUT_FLUSH_MS: u64 = 1;
+const DEFAULT_INPUT_FLUSH_MS: u64 = 2;
+const INPUT_BATCH_LIMIT: usize = 64;
 const DROP_STRIP_WIDTH: i32 = 18;
 const DROP_STRIP_ALPHA: u8 = 48;
 const EDGE_TRIGGER_MARGIN: i32 = 6;
-const CURSOR_LOCK_RADIUS: i32 = 2;
+const CURSOR_LOCK_RADIUS: i32 = 24;
 const RETURN_EDGE_MARGIN: i32 = 4;
 const RETURN_PUSH_THRESHOLD: i32 = 48;
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
@@ -114,7 +115,9 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
     let raw_input = RawInputWindow::create()?;
     eprintln!("raw mouse input registered for relative movement");
     let hooks = Hooks::install()?;
-    eprintln!("input hooks installed; move the mouse through the configured edge to control macOS");
+    eprintln!(
+        "input hooks installed; move the mouse through the configured edge to control the client"
+    );
     if drop_strip.is_some() {
         eprintln!("file drop strip active on the {:?} edge", config.edge);
     }
@@ -621,7 +624,7 @@ fn send_dropped_files(files: Vec<PathBuf>) {
         eprintln!("drop ignored: no connected client");
         return;
     };
-    eprintln!("sending {} dropped file(s) to macOS", files.len());
+    eprintln!("sending {} dropped file(s) to client", files.len());
     thread::spawn(move || {
         let result = file_transfer::send_files(&writer, &files)
             .and_then(|_| writer.write(Frame::new(FrameKind::DragEnd, Vec::new())));
@@ -767,7 +770,7 @@ impl CaptureState {
         });
         self.lock_cursor_to_anchor();
         eprintln!(
-            "entered macOS control at {},{}; press Scroll Lock to release",
+            "entered client control at {},{}; press Scroll Lock to release",
             self.remote_pos.0, self.remote_pos.1
         );
     }
@@ -890,8 +893,23 @@ fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
     let mut log = InputSendLog::new();
 
     loop {
-        match receiver.recv_timeout(input_flush_timeout(pending_since)) {
-            Ok(event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. })) => {
+        let event = match recv_input_event(&receiver, pending_since) {
+            Ok(Some(event)) => event,
+            Ok(None) => {
+                flush_pending_input(
+                    &writer,
+                    &mut pending_delta,
+                    &mut pending_wheel,
+                    &mut pending_since,
+                    &mut log,
+                );
+                continue;
+            }
+            Err(()) => break,
+        };
+
+        match event {
+            event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. }) => {
                 queue_pending_input(
                     event,
                     &mut pending_delta,
@@ -907,7 +925,7 @@ fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
                     &mut log,
                 );
             }
-            Ok(event) => {
+            event => {
                 flush_pending_input(
                     &writer,
                     &mut pending_delta,
@@ -917,17 +935,21 @@ fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
                 );
                 write_input_event(&writer, event, &mut log);
             }
-            Err(RecvTimeoutError::Timeout) => {
-                flush_pending_input(
-                    &writer,
-                    &mut pending_delta,
-                    &mut pending_wheel,
-                    &mut pending_since,
-                    &mut log,
-                );
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
         }
+    }
+}
+
+fn recv_input_event(
+    receiver: &Receiver<InputEvent>,
+    pending_since: Option<Instant>,
+) -> Result<Option<InputEvent>, ()> {
+    match pending_since {
+        Some(_) => match receiver.recv_timeout(input_flush_timeout(pending_since)) {
+            Ok(event) => Ok(Some(event)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(()),
+        },
+        None => receiver.recv().map(Some).map_err(|_| ()),
     }
 }
 
@@ -942,15 +964,15 @@ fn queue_pending_input(
     }
     match event {
         InputEvent::MouseDelta { dx, dy } => {
-            pending_delta.0 += dx;
-            pending_delta.1 += dy;
+            pending_delta.0 = pending_delta.0.saturating_add(dx);
+            pending_delta.1 = pending_delta.1.saturating_add(dy);
         }
         InputEvent::MouseWheel {
             horizontal,
             vertical,
         } => {
-            pending_wheel.0 += horizontal as i32;
-            pending_wheel.1 += vertical as i32;
+            pending_wheel.0 = pending_wheel.0.saturating_add(horizontal as i32);
+            pending_wheel.1 = pending_wheel.1.saturating_add(vertical as i32);
         }
         _ => {}
     }
@@ -964,7 +986,7 @@ fn drain_queued_input(
     pending_since: &mut Option<Instant>,
     log: &mut InputSendLog,
 ) {
-    loop {
+    for _ in 0..INPUT_BATCH_LIMIT {
         match receiver.try_recv() {
             Ok(event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. })) => {
                 queue_pending_input(event, pending_delta, pending_wheel, pending_since);
@@ -1019,7 +1041,6 @@ fn flush_pending_input(
     pending_since: &mut Option<Instant>,
     log: &mut InputSendLog,
 ) {
-    let mut wrote = false;
     if pending_delta.0 != 0 || pending_delta.1 != 0 {
         write_input_event(
             writer,
@@ -1030,7 +1051,6 @@ fn flush_pending_input(
             log,
         );
         *pending_delta = (0, 0);
-        wrote = true;
     }
     if pending_wheel.0 != 0 || pending_wheel.1 != 0 {
         write_input_event(
@@ -1042,11 +1062,8 @@ fn flush_pending_input(
             log,
         );
         *pending_wheel = (0, 0);
-        wrote = true;
     }
-    if wrote {
-        *pending_since = None;
-    }
+    *pending_since = None;
 }
 
 struct InputSendLog {

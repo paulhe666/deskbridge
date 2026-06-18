@@ -11,12 +11,13 @@ use crate::protocol::{self, ClipboardPayload, Frame, FrameKind, InputEvent};
 use crate::transport::SharedWriter;
 
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
-const DEFAULT_INPUT_FLUSH_MS: u64 = 1;
+const DEFAULT_INPUT_FLUSH_MS: u64 = 2;
+const INPUT_BATCH_LIMIT: usize = 64;
 
 pub fn run(server: &str) -> std::io::Result<()> {
-    eprintln!("initializing macOS input sink");
+    eprintln!("initializing local input sink");
     let input = InputApplier::spawn()?;
-    eprintln!("initializing macOS clipboard");
+    eprintln!("initializing local clipboard");
     let mut clipboard = Clipboard::new()?;
     eprintln!("connecting to {server}");
     let mut stream = TcpStream::connect(server)?;
@@ -114,8 +115,22 @@ fn input_worker_loop(input: &mut InputSink, receiver: Receiver<InputEvent>) {
     let mut pending_since = None;
 
     loop {
-        match receiver.recv_timeout(input_flush_timeout(pending_since)) {
-            Ok(event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. })) => {
+        let event = match recv_input_event(&receiver, pending_since) {
+            Ok(Some(event)) => event,
+            Ok(None) => {
+                flush_pending_input(
+                    input,
+                    &mut pending_delta,
+                    &mut pending_wheel,
+                    &mut pending_since,
+                );
+                continue;
+            }
+            Err(()) => break,
+        };
+
+        match event {
+            event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. }) => {
                 queue_pending_input(
                     event,
                     &mut pending_delta,
@@ -130,7 +145,7 @@ fn input_worker_loop(input: &mut InputSink, receiver: Receiver<InputEvent>) {
                     &mut pending_since,
                 );
             }
-            Ok(event) => {
+            event => {
                 flush_pending_input(
                     input,
                     &mut pending_delta,
@@ -139,16 +154,21 @@ fn input_worker_loop(input: &mut InputSink, receiver: Receiver<InputEvent>) {
                 );
                 apply_input_event(input, event);
             }
-            Err(RecvTimeoutError::Timeout) => {
-                flush_pending_input(
-                    input,
-                    &mut pending_delta,
-                    &mut pending_wheel,
-                    &mut pending_since,
-                );
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
         }
+    }
+}
+
+fn recv_input_event(
+    receiver: &Receiver<InputEvent>,
+    pending_since: Option<Instant>,
+) -> Result<Option<InputEvent>, ()> {
+    match pending_since {
+        Some(_) => match receiver.recv_timeout(input_flush_timeout(pending_since)) {
+            Ok(event) => Ok(Some(event)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(()),
+        },
+        None => receiver.recv().map(Some).map_err(|_| ()),
     }
 }
 
@@ -163,15 +183,15 @@ fn queue_pending_input(
     }
     match event {
         InputEvent::MouseDelta { dx, dy } => {
-            pending_delta.0 += dx;
-            pending_delta.1 += dy;
+            pending_delta.0 = pending_delta.0.saturating_add(dx);
+            pending_delta.1 = pending_delta.1.saturating_add(dy);
         }
         InputEvent::MouseWheel {
             horizontal,
             vertical,
         } => {
-            pending_wheel.0 += horizontal as i32;
-            pending_wheel.1 += vertical as i32;
+            pending_wheel.0 = pending_wheel.0.saturating_add(horizontal as i32);
+            pending_wheel.1 = pending_wheel.1.saturating_add(vertical as i32);
         }
         _ => {}
     }
@@ -184,7 +204,7 @@ fn drain_queued_input(
     pending_wheel: &mut (i32, i32),
     pending_since: &mut Option<Instant>,
 ) {
-    loop {
+    for _ in 0..INPUT_BATCH_LIMIT {
         match receiver.try_recv() {
             Ok(event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. })) => {
                 queue_pending_input(event, pending_delta, pending_wheel, pending_since);

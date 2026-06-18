@@ -30,6 +30,23 @@ enum {
     DESKBRIDGE_MOUSE_BUTTON_CENTER = 2,
 };
 
+enum {
+    DESKBRIDGE_TAP_SCROLL = 20,
+    DESKBRIDGE_TAP_KEY_DOWN = 21,
+    DESKBRIDGE_TAP_KEY_UP = 22,
+    DESKBRIDGE_TAP_FLAGS_CHANGED = 23,
+};
+
+typedef bool (*DeskbridgeEventTapCallback)(
+    void *context,
+    uint32_t kind,
+    int64_t a,
+    int64_t b,
+    int64_t c,
+    int64_t d,
+    double x,
+    double y);
+
 int32_t deskbridge_hid_context_create(
     DeskbridgeHidContext **context,
     size_t *keyboard_count,
@@ -58,6 +75,18 @@ int32_t deskbridge_hid_post_scroll(
     DeskbridgeHidContext *context,
     int32_t horizontal,
     int32_t vertical);
+
+int32_t deskbridge_hid_cycle_keyboard_input_source(DeskbridgeHidContext *context);
+
+int32_t deskbridge_event_tap_run(
+    void *context,
+    DeskbridgeEventTapCallback callback);
+
+int32_t deskbridge_macos_set_cursor_position(double x, double y);
+
+int32_t deskbridge_macos_hide_cursor(void);
+
+int32_t deskbridge_macos_show_cursor(void);
 
 void deskbridge_main_display_size(uint32_t *width, uint32_t *height);
 

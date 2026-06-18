@@ -49,6 +49,7 @@ unsafe extern "C" {
         horizontal: i32,
         vertical: i32,
     ) -> i32;
+    fn deskbridge_hid_cycle_keyboard_input_source(context: *mut DeskbridgeHidContext) -> i32;
     fn deskbridge_main_display_size(width: *mut u32, height: *mut u32);
 }
 
@@ -59,6 +60,7 @@ const OPTION_KEYCODE: u16 = 58;
 const RIGHT_OPTION_KEYCODE: u16 = 61;
 const LEFT_SHIFT_KEYCODE: u16 = 56;
 const RIGHT_SHIFT_KEYCODE: u16 = 60;
+const CAPS_LOCK_KEYCODE: u16 = 57;
 const BACKSPACE_KEYCODE: u16 = 51;
 const SPACE_KEYCODE: u16 = 49;
 const NUMBER_4_KEYCODE: u16 = 21;
@@ -69,6 +71,7 @@ const RIGHT_SHIFT_SCANCODE: u16 = 54;
 const BACKSPACE_INITIAL_REPEAT_INTERVAL: Duration = Duration::from_millis(60);
 const BACKSPACE_ACCEL_REPEAT_INTERVAL: Duration = Duration::from_millis(45);
 const BACKSPACE_ACCEL_DELAY: Duration = Duration::from_secs(3);
+const INPUT_SOURCE_TOGGLE_DEBOUNCE: Duration = Duration::from_millis(180);
 const DEFAULT_SCROLL_FRAME_MS: u64 = 8;
 const DEFAULT_SCROLL_SCALE: f64 = 1.25;
 const DEFAULT_SCROLL_RESPONSE: f64 = 0.34;
@@ -221,6 +224,13 @@ impl NativeInput {
             "failed to post scroll event",
         )
     }
+
+    fn cycle_keyboard_input_source(&self) -> std::io::Result<()> {
+        check_native_status(
+            unsafe { deskbridge_hid_cycle_keyboard_input_source(self.context.as_ptr()) },
+            "failed to switch macOS input source",
+        )
+    }
 }
 
 impl Drop for NativeInput {
@@ -248,6 +258,7 @@ pub struct InputSink {
     scroll: SmoothScroller,
     shift_tap_candidate: Option<u16>,
     caps_lock_active: bool,
+    last_input_source_toggle: Option<Instant>,
     last_backspace_repeat: Option<Instant>,
     backspace_down_since: Option<Instant>,
 }
@@ -281,6 +292,7 @@ impl InputSink {
             scroll: SmoothScroller::spawn(),
             shift_tap_candidate: None,
             caps_lock_active: false,
+            last_input_source_toggle: None,
             last_backspace_repeat: None,
             backspace_down_since: None,
         })
@@ -308,7 +320,7 @@ impl InputSink {
         }
         if scancode == CAPS_LOCK_SCANCODE {
             if state == KeyState::Down {
-                self.toggle_caps_lock();
+                self.toggle_caps_lock()?;
             }
             return Ok(());
         }
@@ -426,15 +438,45 @@ impl InputSink {
         Ok(())
     }
 
-    fn toggle_input_source(&self) -> std::io::Result<()> {
+    fn toggle_input_source(&mut self) -> std::io::Result<()> {
+        let now = Instant::now();
+        if self
+            .last_input_source_toggle
+            .map(|last| now.saturating_duration_since(last) < INPUT_SOURCE_TOGGLE_DEBOUNCE)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+
+        match self.native.cycle_keyboard_input_source() {
+            Ok(()) => {
+                self.last_input_source_toggle = Some(now);
+                Ok(())
+            }
+            Err(_) => {
+                self.toggle_input_source_hotkey()?;
+                self.last_input_source_toggle = Some(now);
+                Ok(())
+            }
+        }
+    }
+
+    fn toggle_input_source_hotkey(&self) -> std::io::Result<()> {
         self.post_key_with_flags(CONTROL_KEYCODE, true, EventFlags::CONTROL)?;
         self.post_key_with_flags(SPACE_KEYCODE, true, EventFlags::CONTROL)?;
         self.post_key_with_flags(SPACE_KEYCODE, false, EventFlags::CONTROL)?;
         self.post_key_with_flags(CONTROL_KEYCODE, false, EventFlags::empty())
     }
 
-    fn toggle_caps_lock(&mut self) {
+    fn toggle_caps_lock(&mut self) -> std::io::Result<()> {
         self.caps_lock_active = !self.caps_lock_active;
+        let flags = if self.caps_lock_active {
+            EventFlags::ALPHA_SHIFT
+        } else {
+            EventFlags::empty()
+        };
+        self.post_key_with_flags(CAPS_LOCK_KEYCODE, true, flags)?;
+        self.post_key_with_flags(CAPS_LOCK_KEYCODE, false, flags)
     }
 
     fn post_key(&self, keycode: u16, down: bool) -> std::io::Result<()> {
@@ -555,6 +597,16 @@ impl InputSink {
 
     fn mouse_wheel(&self, horizontal: i16, vertical: i16) -> std::io::Result<()> {
         self.scroll.push(horizontal as i32, vertical as i32)
+    }
+}
+
+impl Drop for InputSink {
+    fn drop(&mut self) {
+        for keycode in self.pressed_keys.drain().collect::<Vec<_>>() {
+            let _ = self
+                .native
+                .post_key(keycode, false, EventFlags::empty(), false);
+        }
     }
 }
 
@@ -921,6 +973,7 @@ fn scancode_to_macos_key(scancode: u16) -> Option<u16> {
         52 => 47,
         53 => 44,
         54 => RIGHT_SHIFT_KEYCODE,
+        55 => 67,
         56 => OPTION_KEYCODE,
         57 => SPACE_KEYCODE,
         58 => 57,
@@ -934,6 +987,20 @@ fn scancode_to_macos_key(scancode: u16) -> Option<u16> {
         66 => 100,
         67 => 101,
         68 => 109,
+        69 => 71,
+        71 => 89,
+        72 => 91,
+        73 => 92,
+        74 => 78,
+        75 => 86,
+        76 => 87,
+        77 => 88,
+        78 => 69,
+        79 => 83,
+        80 => 84,
+        81 => 85,
+        82 => 82,
+        83 => 65,
         91 => COMMAND_KEYCODE,
         92 => RIGHT_COMMAND_KEYCODE,
         87 => 103,
