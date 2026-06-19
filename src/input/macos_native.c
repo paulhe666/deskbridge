@@ -511,9 +511,11 @@ static CGEventRef db_event_tap_callback(
     case kCGEventLeftMouseDragged:
     case kCGEventRightMouseDragged:
     case kCGEventOtherMouseDragged:
-        suppress =
-            db_tap_emit_mouse(state, DESKBRIDGE_MOUSE_MOVED, event, 0);
-        break;
+        db_tap_emit_mouse(state, DESKBRIDGE_MOUSE_MOVED, event, 0);
+        // macOS ignores cursor warps made by the callback when the movement
+        // event is dropped. Returning the event lets the server keep its
+        // visible cursor pinned while Rust forwards only the relative delta.
+        return event;
     case kCGEventLeftMouseDown:
         suppress = db_tap_emit_mouse(
             state,
@@ -654,8 +656,8 @@ int32_t deskbridge_macos_set_cursor_position(double x, double y) {
     return error == kCGErrorSuccess ? 0 : (int32_t)error;
 }
 
-int32_t deskbridge_macos_set_cursor_association(bool associated) {
-    CGError error = CGAssociateMouseAndMouseCursorPosition(associated);
+int32_t deskbridge_macos_restore_cursor_association(void) {
+    CGError error = CGAssociateMouseAndMouseCursorPosition(true);
     return error == kCGErrorSuccess ? 0 : (int32_t)error;
 }
 

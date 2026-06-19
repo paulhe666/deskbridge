@@ -138,17 +138,6 @@ impl PointerRouter {
         }
     }
 
-    pub fn bogus_warp_delta(&self, dx: i32, dy: i32) -> bool {
-        let anchor = self.local_anchor();
-        let margin = 10;
-        dx.saturating_abs() + margin >= anchor.0.max(self.local_size.0 - anchor.0)
-            || dy.saturating_abs() + margin >= anchor.1.max(self.local_size.1 - anchor.1)
-    }
-
-    pub fn local_anchor(&self) -> (i32, i32) {
-        (self.local_size.0 / 2, self.local_size.1 / 2)
-    }
-
     fn return_to_local(&mut self) -> MotionAction {
         let y = scaled(self.remote_pos.1, self.remote_size.1, self.local_size.1);
         let last_x = self.local_size.0.saturating_sub(1);

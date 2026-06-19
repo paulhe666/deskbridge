@@ -40,9 +40,7 @@ unsafe extern "C" {
     ) -> i32;
     fn deskbridge_event_tap_stop();
     fn deskbridge_macos_set_cursor_position(x: f64, y: f64) -> i32;
-    fn deskbridge_macos_set_cursor_association(associated: bool) -> i32;
-    fn deskbridge_macos_hide_cursor() -> i32;
-    fn deskbridge_macos_show_cursor() -> i32;
+    fn deskbridge_macos_restore_cursor_association() -> i32;
 }
 
 pub fn run(config: ServerConfig) -> std::io::Result<()> {
@@ -634,14 +632,31 @@ struct CaptureState {
     pointer: PointerRouter,
     keyboard: KeyboardRouter,
     remote_buttons: HashSet<MouseButton>,
-    local_cursor_capture: LocalCursorCapture,
+    remote_cursor_lock: RemoteCursorLock,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LocalCursorCapture {
-    None,
-    Detached,
-    HiddenWarp,
+#[derive(Debug, Default)]
+struct RemoteCursorLock {
+    anchor: Option<(i32, i32)>,
+}
+
+impl RemoteCursorLock {
+    fn begin(&mut self, edge_x: i32, edge_y: i32, size: (i32, i32)) -> (i32, i32) {
+        let anchor = (
+            edge_x.clamp(0, size.0.saturating_sub(1)),
+            edge_y.clamp(0, size.1.saturating_sub(1)),
+        );
+        self.anchor = Some(anchor);
+        anchor
+    }
+
+    fn position(&self) -> Option<(i32, i32)> {
+        self.anchor
+    }
+
+    fn end(&mut self) {
+        self.anchor = None;
+    }
 }
 
 impl CaptureState {
@@ -651,7 +666,7 @@ impl CaptureState {
             pointer: PointerRouter::new(edge, screen_size_i32(), remote_size),
             keyboard: KeyboardRouter::new(ModifierMapping::from_env()),
             remote_buttons: HashSet::new(),
-            local_cursor_capture: LocalCursorCapture::None,
+            remote_cursor_lock: RemoteCursorLock::default(),
         }
     }
 
@@ -671,13 +686,7 @@ impl CaptureState {
             let dx = event.b as i32;
             let dy = event.c as i32;
             if dx == 0 && dy == 0 {
-                self.recenter_fallback_cursor();
-                return true;
-            }
-            if self.local_cursor_capture == LocalCursorCapture::HiddenWarp
-                && self.pointer.bogus_warp_delta(dx, dy)
-            {
-                self.recenter_fallback_cursor();
+                self.pin_remote_cursor();
                 return true;
             }
 
@@ -687,11 +696,11 @@ impl CaptureState {
             {
                 MotionAction::MoveRemote { dx, dy } => {
                     self.send_input(InputEvent::MouseDelta { dx, dy });
-                    self.recenter_fallback_cursor();
+                    self.pin_remote_cursor();
                 }
                 MotionAction::ReturnLocal { x, y } => {
                     self.finish_remote_session();
-                    self.restore_local_cursor_capture();
+                    self.end_remote_cursor_capture();
                     self.set_cursor_position(x, y);
                     eprintln!("released control back to macOS");
                 }
@@ -772,12 +781,10 @@ impl CaptureState {
         true
     }
 
-    fn recenter_fallback_cursor(&self) {
-        if self.local_cursor_capture != LocalCursorCapture::HiddenWarp {
-            return;
+    fn pin_remote_cursor(&self) {
+        if let Some((x, y)) = self.remote_cursor_lock.position() {
+            self.set_cursor_position(x, y);
         }
-        let anchor = self.pointer.local_anchor();
-        self.set_cursor_position(anchor.0, anchor.1);
     }
 
     fn set_cursor_position(&self, x: i32, y: i32) {
@@ -788,41 +795,16 @@ impl CaptureState {
     }
 
     fn begin_remote_cursor_capture(&mut self, edge_x: i32, edge_y: i32) {
-        self.set_cursor_position(edge_x, edge_y);
-        let detach_status = unsafe { deskbridge_macos_set_cursor_association(false) };
-        if detach_status == 0 {
-            self.local_cursor_capture = LocalCursorCapture::Detached;
-            return;
-        }
-
-        eprintln!(
-            "failed to detach macOS cursor (native status {detach_status}); using hidden warp fallback"
-        );
-        let hide_status = unsafe { deskbridge_macos_hide_cursor() };
-        if hide_status == 0 {
-            self.local_cursor_capture = LocalCursorCapture::HiddenWarp;
-            self.recenter_fallback_cursor();
-        } else {
-            eprintln!("failed to hide macOS cursor (native status {hide_status})");
-            self.local_cursor_capture = LocalCursorCapture::None;
-        }
+        let size = screen_size_i32();
+        let (x, y) = self.remote_cursor_lock.begin(edge_x, edge_y, size);
+        self.set_cursor_position(x, y);
     }
 
-    fn restore_local_cursor_capture(&mut self) {
-        match std::mem::replace(&mut self.local_cursor_capture, LocalCursorCapture::None) {
-            LocalCursorCapture::Detached => {
-                let status = unsafe { deskbridge_macos_set_cursor_association(true) };
-                if status != 0 {
-                    eprintln!("failed to reattach macOS cursor (native status {status})");
-                }
-            }
-            LocalCursorCapture::HiddenWarp => {
-                let status = unsafe { deskbridge_macos_show_cursor() };
-                if status != 0 {
-                    eprintln!("failed to show macOS cursor (native status {status})");
-                }
-            }
-            LocalCursorCapture::None => {}
+    fn end_remote_cursor_capture(&mut self) {
+        self.remote_cursor_lock.end();
+        let status = unsafe { deskbridge_macos_restore_cursor_association() };
+        if status != 0 {
+            eprintln!("failed to restore macOS cursor association (native status {status})");
         }
     }
 
@@ -856,7 +838,7 @@ impl CaptureState {
             self.release_remote_buttons();
         }
         let local_position = self.pointer.force_local();
-        self.restore_local_cursor_capture();
+        self.end_remote_cursor_capture();
         if let Some((x, y)) = local_position {
             self.set_cursor_position(x, y);
         }
@@ -901,4 +883,29 @@ fn screen_size_i32() -> (i32, i32) {
 
 fn clamp_i16(value: i32) -> i16 {
     value.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RemoteCursorLock;
+
+    #[test]
+    fn remote_cursor_lock_stays_at_edge_until_session_ends() {
+        let mut lock = RemoteCursorLock::default();
+
+        assert_eq!(lock.begin(999, 400, (1000, 800)), (999, 400));
+        assert_eq!(lock.position(), Some((999, 400)));
+        assert_eq!(lock.position(), Some((999, 400)));
+
+        lock.end();
+        assert_eq!(lock.position(), None);
+    }
+
+    #[test]
+    fn remote_cursor_lock_clamps_anchor_to_local_screen() {
+        let mut lock = RemoteCursorLock::default();
+
+        assert_eq!(lock.begin(1000, -1, (1000, 800)), (999, 0));
+        assert_eq!(lock.position(), Some((999, 0)));
+    }
 }
