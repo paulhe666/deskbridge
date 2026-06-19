@@ -654,6 +654,11 @@ int32_t deskbridge_macos_set_cursor_position(double x, double y) {
     return error == kCGErrorSuccess ? 0 : (int32_t)error;
 }
 
+int32_t deskbridge_macos_set_cursor_association(bool associated) {
+    CGError error = CGAssociateMouseAndMouseCursorPosition(associated);
+    return error == kCGErrorSuccess ? 0 : (int32_t)error;
+}
+
 int32_t deskbridge_macos_hide_cursor(void) {
     CGError error = CGDisplayHideCursor(CGMainDisplayID());
     CGAssociateMouseAndMouseCursorPosition(true);

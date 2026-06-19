@@ -1,10 +1,10 @@
 use crate::server::Edge;
 
-const EDGE_TRIGGER_MARGIN: i32 = 2;
-const EDGE_REARM_DISTANCE: i32 = 24;
-const RETURN_EDGE_MARGIN: i32 = 2;
-const RETURN_PUSH_THRESHOLD: i32 = 32;
-const LOCAL_RETURN_INSET: i32 = 32;
+const EDGE_TRIGGER_MARGIN: i32 = 6;
+const EDGE_REARM_DISTANCE: i32 = 8;
+const RETURN_EDGE_MARGIN: i32 = 3;
+const RETURN_PUSH_THRESHOLD: i32 = 10;
+const LOCAL_RETURN_INSET: i32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MotionAction {
@@ -170,8 +170,8 @@ impl PointerRouter {
 
     fn inside_rearm_zone(&self, x: i32) -> bool {
         match self.edge {
-            Edge::Right => x < self.local_size.0.saturating_sub(EDGE_REARM_DISTANCE),
-            Edge::Left => x > EDGE_REARM_DISTANCE,
+            Edge::Right => x <= self.local_size.0.saturating_sub(1 + EDGE_REARM_DISTANCE),
+            Edge::Left => x >= EDGE_REARM_DISTANCE,
         }
     }
 }
@@ -212,8 +212,8 @@ mod tests {
             MotionAction::MoveRemote { dx: -200, dy: 0 }
         );
         assert!(matches!(
-            router.observe_remote_motion(-32, 0, true),
-            MotionAction::ReturnLocal { x: 967, y: 408 }
+            router.observe_remote_motion(-10, 0, true),
+            MotionAction::ReturnLocal { x: 991, y: 408 }
         ));
         assert!(!router.is_remote());
     }
@@ -222,7 +222,7 @@ mod tests {
     fn return_position_cannot_immediately_reenter() {
         let mut router = PointerRouter::new(Edge::Right, (1000, 800), (1200, 900));
         router.observe_local_motion(999, 400);
-        let MotionAction::ReturnLocal { x, y } = router.observe_remote_motion(-32, 0, true) else {
+        let MotionAction::ReturnLocal { x, y } = router.observe_remote_motion(-10, 0, true) else {
             panic!("expected return to local");
         };
         assert_eq!(router.observe_local_motion(x, y), MotionAction::Local);
@@ -240,8 +240,13 @@ mod tests {
             MotionAction::EnterRemote { x: 1199, y: 450 }
         );
         assert_eq!(
-            router.observe_remote_motion(32, 0, true),
-            MotionAction::ReturnLocal { x: 32, y: 400 }
+            router.observe_remote_motion(10, 0, true),
+            MotionAction::ReturnLocal { x: 8, y: 400 }
+        );
+        assert_eq!(router.observe_local_motion(8, 400), MotionAction::Local);
+        assert_eq!(
+            router.observe_local_motion(0, 400),
+            MotionAction::EnterRemote { x: 1199, y: 450 }
         );
     }
 
@@ -258,7 +263,7 @@ mod tests {
         );
         assert!(router.is_remote());
         assert!(matches!(
-            router.observe_remote_motion(-32, 0, true),
+            router.observe_remote_motion(-10, 0, true),
             MotionAction::ReturnLocal { .. }
         ));
     }
@@ -268,7 +273,7 @@ mod tests {
         let mut router = PointerRouter::new(Edge::Right, (1000, 800), (1200, 900));
         assert_eq!(router.force_local(), None);
         router.observe_local_motion(999, 400);
-        assert_eq!(router.force_local(), Some((967, 400)));
+        assert_eq!(router.force_local(), Some((991, 400)));
         assert_eq!(router.force_local(), None);
     }
 }

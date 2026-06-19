@@ -85,6 +85,7 @@ int32_t deskbridge_event_tap_run(
 void deskbridge_event_tap_stop(void);
 
 int32_t deskbridge_macos_set_cursor_position(double x, double y);
+int32_t deskbridge_macos_set_cursor_association(bool associated);
 
 int32_t deskbridge_macos_hide_cursor(void);
 
