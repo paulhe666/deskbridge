@@ -68,6 +68,10 @@ impl InputSink {
         }
     }
 
+    pub fn screen_size(&self) -> (u32, u32) {
+        (self.screen_size.0 as u32, self.screen_size.1 as u32)
+    }
+
     fn key(&mut self, scancode: u16, state: KeyState) -> std::io::Result<()> {
         match state {
             KeyState::Down => {
@@ -272,7 +276,7 @@ fn send_input(input: INPUT) -> std::io::Result<()> {
     }
 }
 
-pub fn screen_size() -> (u32, u32) {
+fn screen_size() -> (u32, u32) {
     let width = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1) as u32;
     let height = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(1) as u32;
     (width, height)

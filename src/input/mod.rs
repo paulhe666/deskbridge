@@ -15,5 +15,3 @@ pub use unsupported::InputSink;
 pub use unsupported::screen_size;
 #[cfg(windows)]
 pub use windows::InputSink;
-#[cfg(windows)]
-pub use windows::screen_size;

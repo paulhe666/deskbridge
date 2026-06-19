@@ -27,7 +27,8 @@ pub fn run(server: &str) -> std::io::Result<()> {
         stop_flag.store(true, Ordering::Release);
         let _ = stop_stream.shutdown(Shutdown::Both);
     });
-    let (width, height) = crate::input::screen_size();
+    eprintln!("initializing local input sink");
+    let (input, (width, height)) = InputApplier::spawn()?;
     eprintln!("connected; sending hello with screen {width}x{height}");
     writer.write(crate::protocol::Frame::new(
         FrameKind::Hello,
@@ -44,8 +45,6 @@ pub fn run(server: &str) -> std::io::Result<()> {
     let server_hello = protocol::decode_hello(&server_hello.payload)?;
     protocol::validate_version(server_hello)?;
 
-    eprintln!("initializing local input sink");
-    let input = InputApplier::spawn()?;
     eprintln!("initializing local clipboard");
     let mut clipboard = Clipboard::new()?;
 
@@ -105,27 +104,31 @@ struct InputApplier {
 }
 
 impl InputApplier {
-    fn spawn() -> std::io::Result<Self> {
+    fn spawn() -> std::io::Result<(Self, (u32, u32))> {
         let (sender, receiver) = mpsc::channel();
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let worker = thread::spawn(move || match InputSink::new() {
             Ok(mut input) => {
-                let _ = ready_sender.send(Ok(()));
+                let screen_size = input.screen_size();
+                let _ = ready_sender.send(Ok(screen_size));
                 input_worker_loop(&mut input, receiver);
             }
             Err(e) => {
                 let _ = ready_sender.send(Err(e.to_string()));
             }
         });
-        match ready_receiver.recv() {
-            Ok(Ok(())) => {}
+        let screen_size = match ready_receiver.recv() {
+            Ok(Ok(screen_size)) => screen_size,
             Ok(Err(e)) => return Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
             Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e)),
-        }
-        Ok(Self {
-            sender: Some(sender),
-            worker: Some(worker),
-        })
+        };
+        Ok((
+            Self {
+                sender: Some(sender),
+                worker: Some(worker),
+            },
+            screen_size,
+        ))
     }
 
     fn send(&self, event: InputEvent) {

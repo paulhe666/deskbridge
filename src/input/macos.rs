@@ -323,6 +323,10 @@ impl InputSink {
         }
     }
 
+    pub fn screen_size(&self) -> (u32, u32) {
+        (self.screen_size.0 as u32, self.screen_size.1 as u32)
+    }
+
     fn key(&mut self, scancode: u16, state: KeyState) -> std::io::Result<()> {
         if scancode == PRINT_SCREEN_SCANCODE {
             if state == KeyState::Down {
