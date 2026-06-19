@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -6,13 +6,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::macos_capture::{KeyboardRouter, ModifierMapping, MotionAction, PointerRouter};
 use super::{Edge, ServerConfig};
 use crate::clipboard::{Clipboard, ClipboardApi};
-use crate::config::ModifierTarget;
 use crate::file_transfer;
-use crate::protocol::{
-    self, ClipboardPayload, Frame, FrameKind, InputEvent, KeyState, MouseButton,
-};
+use crate::protocol::{self, ClipboardPayload, Frame, FrameKind, InputEvent, MouseButton};
 use crate::transport::SharedWriter;
 
 const DEFAULT_REMOTE_WIDTH: i32 = 1366;
@@ -20,11 +18,6 @@ const DEFAULT_REMOTE_HEIGHT: i32 = 768;
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
 const DEFAULT_INPUT_FLUSH_MS: u64 = 2;
 const INPUT_BATCH_LIMIT: usize = 64;
-const EDGE_TRIGGER_MARGIN: i32 = 6;
-const RETURN_EDGE_MARGIN: i32 = 4;
-const RETURN_PUSH_THRESHOLD: i32 = 48;
-const CAPS_LOCK_SCANCODE: u16 = 58;
-
 const TAP_MOUSE_MOVED: u32 = 1;
 const TAP_MOUSE_LEFT_DOWN: u32 = 2;
 const TAP_MOUSE_LEFT_UP: u32 = 3;
@@ -44,7 +37,10 @@ unsafe extern "C" {
         context: *mut c_void,
         callback: extern "C" fn(*mut c_void, u32, i64, i64, i64, i64, f64, f64) -> bool,
     ) -> i32;
+    fn deskbridge_event_tap_stop();
     fn deskbridge_macos_set_cursor_position(x: f64, y: f64) -> i32;
+    fn deskbridge_macos_hide_cursor() -> i32;
+    fn deskbridge_macos_show_cursor() -> i32;
 }
 
 pub fn run(config: ServerConfig) -> std::io::Result<()> {
@@ -89,12 +85,30 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
             "capture state already initialized",
         ));
     }
+    crate::shutdown::spawn_gui_stop_watcher(|| {
+        restore_capture_to_local();
+        unsafe {
+            deskbridge_event_tap_stop();
+        }
+    });
 
-    spawn_inbound_reader(stream, Arc::clone(&clipboard_state));
+    let connection_error = Arc::new(Mutex::new(None));
+    spawn_inbound_reader(
+        stream,
+        Arc::clone(&clipboard_state),
+        Arc::clone(&connection_error),
+    );
     spawn_clipboard_watcher(writer, clipboard_state);
 
     eprintln!("macOS event tap starting; move through the configured edge to control Windows");
     let status = unsafe { deskbridge_event_tap_run(std::ptr::null_mut(), event_tap_callback) };
+    restore_capture_to_local();
+    if let Some(message) = connection_error.lock().unwrap().take() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            message,
+        ));
+    }
     if status == 0 {
         Ok(())
     } else {
@@ -118,13 +132,17 @@ fn read_client_hello(stream: &mut TcpStream) -> std::io::Result<(i32, i32)> {
     Ok((width.max(1), height.max(1)))
 }
 
-fn spawn_inbound_reader(mut stream: TcpStream, clipboard_state: Arc<Mutex<ClipboardSyncState>>) {
+fn spawn_inbound_reader(
+    mut stream: TcpStream,
+    clipboard_state: Arc<Mutex<ClipboardSyncState>>,
+    connection_error: Arc<Mutex<Option<String>>>,
+) {
     thread::spawn(move || {
         let mut clipboard = match Clipboard::new() {
-            Ok(clipboard) => clipboard,
+            Ok(clipboard) => Some(clipboard),
             Err(e) => {
-                eprintln!("clipboard receiver disabled: {e}");
-                return;
+                eprintln!("clipboard receiver disabled, input connection remains active: {e}");
+                None
             }
         };
         let receive_root = std::env::temp_dir().join("deskbridge-received");
@@ -135,17 +153,24 @@ fn spawn_inbound_reader(mut stream: TcpStream, clipboard_state: Arc<Mutex<Clipbo
                 Ok(frame) => frame,
                 Err(e) => {
                     eprintln!("connection closed: {e}");
-                    std::process::exit(1);
+                    *connection_error.lock().unwrap() = Some(e.to_string());
+                    restore_capture_to_local();
+                    unsafe {
+                        deskbridge_event_tap_stop();
+                    }
+                    return;
                 }
             };
             match frame.kind {
                 FrameKind::Clipboard => match protocol::decode_clipboard(&frame.payload) {
                     Ok(payload) => {
                         eprintln!("received clipboard {}", clipboard_summary(&payload));
-                        if let Err(e) = clipboard.write(&payload) {
-                            eprintln!("clipboard write failed: {e}");
-                        } else {
-                            note_remote_clipboard(&clipboard_state, &payload);
+                        if let Some(clipboard) = clipboard.as_mut() {
+                            if let Err(e) = clipboard.write(&payload) {
+                                eprintln!("clipboard write failed: {e}");
+                            } else {
+                                note_remote_clipboard(&clipboard_state, &payload);
+                            }
                         }
                     }
                     Err(e) => eprintln!("clipboard decode failed: {e}"),
@@ -166,16 +191,24 @@ fn spawn_inbound_reader(mut stream: TcpStream, clipboard_state: Arc<Mutex<Clipbo
                 FrameKind::DragEnd => {
                     let payload = ClipboardPayload::Files(incoming_files.finish());
                     eprintln!("received clipboard {}", clipboard_summary(&payload));
-                    if let Err(e) = clipboard.write(&payload) {
-                        eprintln!("file clipboard write failed: {e}");
-                    } else {
-                        note_remote_clipboard(&clipboard_state, &payload);
+                    if let Some(clipboard) = clipboard.as_mut() {
+                        if let Err(e) = clipboard.write(&payload) {
+                            eprintln!("file clipboard write failed: {e}");
+                        } else {
+                            note_remote_clipboard(&clipboard_state, &payload);
+                        }
                     }
                 }
                 _ => {}
             }
         }
     });
+}
+
+fn restore_capture_to_local() {
+    if let Some(state) = CAPTURE_STATE.get() {
+        state.lock().unwrap().restore_to_local();
+    }
 }
 
 fn spawn_clipboard_watcher(writer: SharedWriter, clipboard_state: Arc<Mutex<ClipboardSyncState>>) {
@@ -563,64 +596,9 @@ struct TapEvent {
     a: i64,
     b: i64,
     c: i64,
+    d: i64,
     x: f64,
     y: f64,
-}
-
-#[derive(Clone, Copy)]
-struct ModifierMapping {
-    command: ModifierTarget,
-    control: ModifierTarget,
-    option: ModifierTarget,
-}
-
-impl ModifierMapping {
-    fn from_env() -> Self {
-        let mapping = Self {
-            command: env_modifier_target("DESKBRIDGE_MAC_COMMAND_MAPPING", ModifierTarget::Control),
-            control: env_modifier_target("DESKBRIDGE_MAC_CONTROL_MAPPING", ModifierTarget::Control),
-            option: env_modifier_target("DESKBRIDGE_MAC_OPTION_MAPPING", ModifierTarget::Alt),
-        };
-        eprintln!(
-            "macOS server modifier mapping: Command->{}, Control->{}, Option->{}",
-            mapping.command.as_str(),
-            mapping.control.as_str(),
-            mapping.option.as_str()
-        );
-        mapping
-    }
-
-    fn scancode_for_mac_modifier(self, keycode: u16) -> Option<u16> {
-        let (target, right) = match keycode {
-            54 => (self.command, true),
-            55 => (self.command, false),
-            58 => (self.option, false),
-            59 => (self.control, false),
-            61 => (self.option, true),
-            62 => (self.control, true),
-            _ => return None,
-        };
-        target_scancode(target, right)
-    }
-}
-
-fn env_modifier_target(name: &str, default: ModifierTarget) -> ModifierTarget {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| ModifierTarget::parse(value.trim()))
-        .unwrap_or(default)
-}
-
-fn target_scancode(target: ModifierTarget, right: bool) -> Option<u16> {
-    match (target, right) {
-        (ModifierTarget::Control, false) => Some(29),
-        (ModifierTarget::Control, true) => Some(285),
-        (ModifierTarget::Meta, false) => Some(347),
-        (ModifierTarget::Meta, true) => Some(348),
-        (ModifierTarget::Alt, false) => Some(56),
-        (ModifierTarget::Alt, true) => Some(312),
-        (ModifierTarget::Disabled, _) => None,
-    }
 }
 
 extern "C" fn event_tap_callback(
@@ -629,7 +607,7 @@ extern "C" fn event_tap_callback(
     a: i64,
     b: i64,
     c: i64,
-    _d: i64,
+    d: i64,
     x: f64,
     y: f64,
 ) -> bool {
@@ -638,6 +616,7 @@ extern "C" fn event_tap_callback(
         a,
         b,
         c,
+        d,
         x,
         y,
     };
@@ -649,32 +628,20 @@ extern "C" fn event_tap_callback(
 
 struct CaptureState {
     input: InputEmitter,
-    edge: Edge,
-    local_size: (i32, i32),
-    remote_size: (i32, i32),
-    remote_pos: (i32, i32),
-    return_push: i32,
-    active: bool,
-    local_left_down: bool,
-    pressed_keys: HashMap<u16, usize>,
-    pressed_mac_modifiers: HashSet<u16>,
-    modifier_mapping: ModifierMapping,
+    pointer: PointerRouter,
+    keyboard: KeyboardRouter,
+    remote_buttons: HashSet<MouseButton>,
+    local_cursor_hidden: bool,
 }
 
 impl CaptureState {
     fn new(input: InputEmitter, edge: Edge, remote_size: (i32, i32)) -> Self {
         Self {
             input,
-            edge,
-            local_size: screen_size_i32(),
-            remote_size,
-            remote_pos: (0, 0),
-            return_push: 0,
-            active: false,
-            local_left_down: false,
-            pressed_keys: HashMap::new(),
-            pressed_mac_modifiers: HashSet::new(),
-            modifier_mapping: ModifierMapping::from_env(),
+            pointer: PointerRouter::new(edge, screen_size_i32(), remote_size),
+            keyboard: KeyboardRouter::new(ModifierMapping::from_env()),
+            remote_buttons: HashSet::new(),
+            local_cursor_hidden: false,
         }
     }
 
@@ -690,52 +657,72 @@ impl CaptureState {
     }
 
     fn handle_mouse_move(&mut self, event: TapEvent) -> bool {
-        if self.active {
+        if self.pointer.is_remote() {
             let dx = event.b as i32;
             let dy = event.c as i32;
             if dx == 0 && dy == 0 {
-                return true;
-            }
-            if self.should_release_to_local(dx) {
-                self.deactivate();
-                return true;
-            }
-            self.remote_pos.0 = clamp(self.remote_pos.0 + dx, 0, self.remote_size.0 - 1);
-            self.remote_pos.1 = clamp(self.remote_pos.1 + dy, 0, self.remote_size.1 - 1);
-            self.send_input(InputEvent::MouseDelta { dx, dy });
-            return true;
-        }
-
-        self.local_size = screen_size_i32();
-        if self.crossed_edge(event.x.round() as i32) {
-            if self.local_left_down {
+                self.recenter_local_cursor();
                 return false;
             }
-            self.activate(event.y.round() as i32);
-            return true;
+            if self.pointer.bogus_warp_delta(dx, dy) {
+                self.recenter_local_cursor();
+                return false;
+            }
+
+            match self
+                .pointer
+                .observe_remote_motion(dx, dy, self.remote_buttons.is_empty())
+            {
+                MotionAction::MoveRemote { dx, dy } => {
+                    self.send_input(InputEvent::MouseDelta { dx, dy });
+                    self.recenter_local_cursor();
+                }
+                MotionAction::ReturnLocal { x, y } => {
+                    self.release_remote_keys();
+                    self.restore_local_cursor();
+                    self.set_cursor_position(x, y);
+                    eprintln!("released control back to macOS");
+                }
+                MotionAction::Local | MotionAction::EnterRemote { .. } => {}
+            }
+            return false;
+        }
+
+        self.pointer.update_local_size(screen_size_i32());
+        if let MotionAction::EnterRemote { x, y } = self
+            .pointer
+            .observe_local_motion(event.x.round() as i32, event.y.round() as i32)
+        {
+            for input in self.keyboard.sync_flags(event.d as u64) {
+                self.send_input(input);
+            }
+            self.hide_local_cursor();
+            self.recenter_local_cursor();
+            self.send_input(InputEvent::MouseEnter { x, y });
+            eprintln!("entered Windows control at {x},{y}; push back through the edge to release");
         }
         false
     }
 
     fn handle_mouse_button(&mut self, event: TapEvent) -> bool {
-        if !self.active {
-            match event.kind {
-                TAP_MOUSE_LEFT_DOWN => self.local_left_down = true,
-                TAP_MOUSE_LEFT_UP => self.local_left_down = false,
-                _ => {}
-            }
+        let Some((button, down)) = mouse_button_from_tap(event) else {
+            return false;
+        };
+        if !self.pointer.is_remote() {
+            self.pointer.observe_local_button(down);
             return false;
         }
-
-        let Some((button, down)) = mouse_button_from_tap(event) else {
-            return true;
-        };
+        if down {
+            self.remote_buttons.insert(button);
+        } else {
+            self.remote_buttons.remove(&button);
+        }
         self.send_input(InputEvent::MouseButton { button, down });
         true
     }
 
     fn handle_scroll(&mut self, event: TapEvent) -> bool {
-        if !self.active {
+        if !self.pointer.is_remote() {
             return false;
         }
         self.send_input(InputEvent::MouseWheel {
@@ -746,7 +733,7 @@ impl CaptureState {
     }
 
     fn handle_keyboard(&mut self, event: TapEvent) -> bool {
-        if !self.active {
+        if !self.pointer.is_remote() {
             return false;
         }
 
@@ -754,163 +741,92 @@ impl CaptureState {
         match event.kind {
             TAP_KEY_DOWN => {
                 let repeat = event.b != 0;
-                self.key_down(mac_keycode, repeat);
+                for input in self.keyboard.key_down(mac_keycode, repeat) {
+                    self.send_input(input);
+                }
             }
-            TAP_KEY_UP => self.key_up(mac_keycode),
-            TAP_FLAGS_CHANGED => self.flags_changed(mac_keycode, event.c as u64),
+            TAP_KEY_UP => {
+                for input in self.keyboard.key_up(mac_keycode) {
+                    self.send_input(input);
+                }
+            }
+            TAP_FLAGS_CHANGED => {
+                for input in self.keyboard.flags_changed(mac_keycode, event.c as u64) {
+                    self.send_input(input);
+                }
+            }
             _ => {}
         }
         true
     }
 
-    fn key_down(&mut self, mac_keycode: u16, repeat: bool) {
-        let Some(scancode) = mac_keycode_to_windows_scancode(mac_keycode, self.modifier_mapping)
-        else {
-            return;
-        };
-        let state = if repeat || self.pressed_keys.contains_key(&scancode) {
-            KeyState::Repeat
-        } else {
-            self.pressed_keys.insert(scancode, 1);
-            KeyState::Down
-        };
-        self.send_input(InputEvent::Key { scancode, state });
+    fn recenter_local_cursor(&self) {
+        let anchor = self.pointer.local_anchor();
+        self.set_cursor_position(anchor.0, anchor.1);
     }
 
-    fn key_up(&mut self, mac_keycode: u16) {
-        let Some(scancode) = mac_keycode_to_windows_scancode(mac_keycode, self.modifier_mapping)
-        else {
-            return;
-        };
-        self.pressed_keys.remove(&scancode);
-        self.send_input(InputEvent::Key {
-            scancode,
-            state: KeyState::Up,
-        });
-    }
-
-    fn flags_changed(&mut self, mac_keycode: u16, flags: u64) {
-        let Some(scancode) = mac_keycode_to_windows_scancode(mac_keycode, self.modifier_mapping)
-        else {
-            return;
-        };
-        if scancode == CAPS_LOCK_SCANCODE {
-            self.send_input(InputEvent::Key {
-                scancode,
-                state: KeyState::Down,
-            });
-            self.send_input(InputEvent::Key {
-                scancode,
-                state: KeyState::Up,
-            });
-            return;
+    fn set_cursor_position(&self, x: i32, y: i32) {
+        let status = unsafe { deskbridge_macos_set_cursor_position(x as f64, y as f64) };
+        if status != 0 {
+            eprintln!("failed to warp macOS cursor (native status {status})");
         }
+    }
 
-        let tracked = self.pressed_mac_modifiers.contains(&mac_keycode);
-        let down = tracked || mac_modifier_flag_down(mac_keycode, flags);
-        if down && !tracked {
-            self.pressed_mac_modifiers.insert(mac_keycode);
-            let should_send_down = {
-                let count = self.pressed_keys.entry(scancode).or_insert(0);
-                let should_send_down = *count == 0;
-                *count += 1;
-                should_send_down
-            };
-            if should_send_down {
-                self.send_input(InputEvent::Key {
-                    scancode,
-                    state: KeyState::Down,
-                });
-            }
-        } else if tracked {
-            self.pressed_mac_modifiers.remove(&mac_keycode);
-            let should_send_up = if let Some(count) = self.pressed_keys.get_mut(&scancode) {
-                *count = count.saturating_sub(1);
-                *count == 0
+    fn hide_local_cursor(&mut self) {
+        if !self.local_cursor_hidden {
+            let status = unsafe { deskbridge_macos_hide_cursor() };
+            if status == 0 {
+                self.local_cursor_hidden = true;
             } else {
-                false
-            };
-            if should_send_up {
-                self.pressed_keys.remove(&scancode);
-                self.send_input(InputEvent::Key {
-                    scancode,
-                    state: KeyState::Up,
-                });
+                eprintln!("failed to hide macOS cursor (native status {status})");
             }
         }
     }
 
-    fn activate(&mut self, local_y: i32) {
-        self.active = true;
-        self.local_left_down = false;
-        self.local_size = screen_size_i32();
-        self.remote_pos = match self.edge {
-            Edge::Right => (0, scaled_y(local_y, self.local_size.1, self.remote_size.1)),
-            Edge::Left => (
-                self.remote_size.0 - 1,
-                scaled_y(local_y, self.local_size.1, self.remote_size.1),
-            ),
-        };
-        self.return_push = 0;
-        self.send_input(InputEvent::MouseEnter {
-            x: self.remote_pos.0,
-            y: self.remote_pos.1,
-        });
-        eprintln!(
-            "entered Windows control at {},{}; move back through the edge to release",
-            self.remote_pos.0, self.remote_pos.1
-        );
+    fn restore_local_cursor(&mut self) {
+        if self.local_cursor_hidden {
+            let status = unsafe { deskbridge_macos_show_cursor() };
+            if status == 0 {
+                self.local_cursor_hidden = false;
+            } else {
+                eprintln!("failed to show macOS cursor (native status {status})");
+            }
+        }
     }
 
-    fn deactivate(&mut self) {
-        for scancode in self.pressed_keys.keys().copied().collect::<Vec<_>>() {
-            self.send_input(InputEvent::Key {
-                scancode,
-                state: KeyState::Up,
+    fn release_remote_keys(&mut self) {
+        for input in self.keyboard.release_all() {
+            self.send_input(input);
+        }
+    }
+
+    fn release_remote_buttons(&mut self) {
+        for button in self.remote_buttons.drain().collect::<Vec<_>>() {
+            self.input.send(InputEvent::MouseButton {
+                button,
+                down: false,
             });
         }
-        self.pressed_keys.clear();
-        self.pressed_mac_modifiers.clear();
-        self.active = false;
-        self.return_push = 0;
-        let x = match self.edge {
-            Edge::Right => self.local_size.0.saturating_sub(2),
-            Edge::Left => 1,
-        };
-        let y = self.local_size.1 / 2;
-        let _ = unsafe { deskbridge_macos_set_cursor_position(x as f64, y as f64) };
-        eprintln!("released control back to macOS");
     }
 
-    fn crossed_edge(&self, x: i32) -> bool {
-        match self.edge {
-            Edge::Right => x >= self.local_size.0.saturating_sub(EDGE_TRIGGER_MARGIN),
-            Edge::Left => x <= EDGE_TRIGGER_MARGIN,
+    fn restore_to_local(&mut self) {
+        self.release_remote_keys();
+        self.release_remote_buttons();
+        let local_position = self.pointer.force_local();
+        self.restore_local_cursor();
+        if let Some((x, y)) = local_position {
+            self.set_cursor_position(x, y);
         }
-    }
-
-    fn should_release_to_local(&mut self, dx: i32) -> bool {
-        let pushing_out = match self.edge {
-            Edge::Right => dx < 0,
-            Edge::Left => dx > 0,
-        };
-        let at_return_edge = match self.edge {
-            Edge::Right => self.remote_pos.0 <= RETURN_EDGE_MARGIN,
-            Edge::Left => {
-                self.remote_pos.0 >= self.remote_size.0.saturating_sub(1 + RETURN_EDGE_MARGIN)
-            }
-        };
-        if !pushing_out || !at_return_edge {
-            self.return_push = 0;
-            return false;
-        }
-
-        self.return_push += dx.abs();
-        self.return_push >= RETURN_PUSH_THRESHOLD
     }
 
     fn send_input(&self, event: InputEvent) {
         self.input.send(event);
+    }
+}
+
+impl Drop for CaptureState {
+    fn drop(&mut self) {
+        self.restore_to_local();
     }
 }
 
@@ -935,150 +851,9 @@ fn mac_other_button(button: i64) -> MouseButton {
     }
 }
 
-fn mac_modifier_flag_down(keycode: u16, flags: u64) -> bool {
-    const ALPHA_SHIFT: u64 = 0x0001_0000;
-    const SHIFT: u64 = 0x0002_0000;
-    const CONTROL: u64 = 0x0004_0000;
-    const ALTERNATE: u64 = 0x0008_0000;
-    const COMMAND: u64 = 0x0010_0000;
-
-    let mask = match keycode {
-        54 | 55 => COMMAND,
-        56 | 60 => SHIFT,
-        57 => ALPHA_SHIFT,
-        58 | 61 => ALTERNATE,
-        59 | 62 => CONTROL,
-        _ => 0,
-    };
-    mask != 0 && flags & mask != 0
-}
-
-fn is_mapped_mac_modifier(keycode: u16) -> bool {
-    matches!(keycode, 54 | 55 | 58 | 59 | 61 | 62)
-}
-
-fn mac_keycode_to_windows_scancode(keycode: u16, modifier_mapping: ModifierMapping) -> Option<u16> {
-    if let Some(scancode) = modifier_mapping.scancode_for_mac_modifier(keycode) {
-        return Some(scancode);
-    }
-    if is_mapped_mac_modifier(keycode) {
-        return None;
-    }
-
-    Some(match keycode {
-        0 => 30,
-        1 => 31,
-        2 => 32,
-        3 => 33,
-        4 => 35,
-        5 => 34,
-        6 => 44,
-        7 => 45,
-        8 => 46,
-        9 => 47,
-        11 => 48,
-        12 => 16,
-        13 => 17,
-        14 => 18,
-        15 => 19,
-        16 => 21,
-        17 => 20,
-        18 => 2,
-        19 => 3,
-        20 => 4,
-        21 => 5,
-        22 => 7,
-        23 => 6,
-        24 => 13,
-        25 => 10,
-        26 => 8,
-        27 => 12,
-        28 => 9,
-        29 => 11,
-        30 => 27,
-        31 => 24,
-        32 => 22,
-        33 => 26,
-        34 => 23,
-        35 => 25,
-        36 => 28,
-        37 => 38,
-        38 => 36,
-        39 => 40,
-        40 => 37,
-        41 => 39,
-        42 => 43,
-        43 => 51,
-        44 => 53,
-        45 => 49,
-        46 => 50,
-        47 => 52,
-        48 => 15,
-        49 => 57,
-        50 => 41,
-        51 => 14,
-        53 => 1,
-        56 => 42,
-        57 => CAPS_LOCK_SCANCODE,
-        60 => 54,
-        65 => 83,
-        67 => 55,
-        69 => 78,
-        71 => 69,
-        75 => 309,
-        76 => 284,
-        78 => 74,
-        82 => 82,
-        83 => 79,
-        84 => 80,
-        85 => 81,
-        86 => 75,
-        87 => 76,
-        88 => 77,
-        89 => 71,
-        91 => 72,
-        92 => 73,
-        96 => 63,
-        97 => 64,
-        98 => 65,
-        99 => 61,
-        100 => 66,
-        101 => 67,
-        103 => 87,
-        109 => 68,
-        111 => 88,
-        114 => 338,
-        115 => 327,
-        116 => 329,
-        117 => 339,
-        118 => 62,
-        119 => 335,
-        120 => 60,
-        121 => 337,
-        122 => 59,
-        123 => 331,
-        124 => 333,
-        125 => 336,
-        126 => 328,
-        _ => return None,
-    })
-}
-
 fn screen_size_i32() -> (i32, i32) {
     let (width, height) = crate::input::screen_size();
     (width.max(1) as i32, height.max(1) as i32)
-}
-
-fn scaled_y(y: i32, from_height: i32, to_height: i32) -> i32 {
-    clamp(
-        (y as i64 * to_height.max(1) as i64 / from_height.max(1) as i64) as i32,
-        0,
-        to_height.saturating_sub(1),
-    )
-}
-
-fn clamp(value: i32, min: i32, max: i32) -> i32 {
-    value.max(min).min(max)
 }
 
 fn clamp_i16(value: i32) -> i16 {

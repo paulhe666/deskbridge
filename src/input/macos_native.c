@@ -6,6 +6,7 @@
 #include <IOKit/hid/IOHIDDeviceKeys.h>
 #include <IOKit/hid/IOHIDManager.h>
 #include <IOKit/hid/IOHIDUsageTables.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -390,6 +391,40 @@ typedef struct DeskbridgeEventTapState {
     CFMachPortRef tap;
 } DeskbridgeEventTapState;
 
+static pthread_mutex_t db_event_tap_lock = PTHREAD_MUTEX_INITIALIZER;
+static CFRunLoopRef db_event_tap_run_loop = NULL;
+static bool db_event_tap_stop_requested = false;
+
+static void db_set_event_tap_run_loop(CFRunLoopRef run_loop) {
+    pthread_mutex_lock(&db_event_tap_lock);
+    if (db_event_tap_run_loop != NULL) {
+        CFRelease(db_event_tap_run_loop);
+    }
+    db_event_tap_run_loop = run_loop;
+    if (db_event_tap_run_loop != NULL) {
+        CFRetain(db_event_tap_run_loop);
+    }
+    pthread_mutex_unlock(&db_event_tap_lock);
+}
+
+static CFRunLoopRef db_copy_event_tap_run_loop(void) {
+    pthread_mutex_lock(&db_event_tap_lock);
+    CFRunLoopRef run_loop = db_event_tap_run_loop;
+    if (run_loop != NULL) {
+        CFRetain(run_loop);
+    }
+    pthread_mutex_unlock(&db_event_tap_lock);
+    return run_loop;
+}
+
+static bool db_take_event_tap_stop_request(void) {
+    pthread_mutex_lock(&db_event_tap_lock);
+    bool requested = db_event_tap_stop_requested;
+    db_event_tap_stop_requested = false;
+    pthread_mutex_unlock(&db_event_tap_lock);
+    return requested;
+}
+
 static int64_t db_event_int(CGEventRef event, CGEventField field) {
     return CGEventGetIntegerValueField(event, field);
 }
@@ -402,7 +437,9 @@ static bool db_tap_emit_mouse(
     CGPoint point = CGEventGetLocation(event);
     int64_t dx = db_event_int(event, kCGMouseEventDeltaX);
     int64_t dy = db_event_int(event, kCGMouseEventDeltaY);
-    return state->callback(state->context, kind, button, dx, dy, 0, point.x, point.y);
+    int64_t flags = (int64_t)CGEventGetFlags(event);
+    return state->callback(
+        state->context, kind, button, dx, dy, flags, point.x, point.y);
 }
 
 static bool db_tap_emit_key(
@@ -585,13 +622,31 @@ int32_t deskbridge_event_tap_run(
         return 3;
     }
 
-    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
+    CFRunLoopRef run_loop = CFRunLoopGetCurrent();
+    db_set_event_tap_run_loop(run_loop);
+    CFRunLoopAddSource(run_loop, source, kCFRunLoopCommonModes);
     CGEventTapEnable(state.tap, true);
-    CFRunLoopRun();
-    CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
+    if (!db_take_event_tap_stop_request()) {
+        CFRunLoopRun();
+    }
+    CFRunLoopRemoveSource(run_loop, source, kCFRunLoopCommonModes);
+    db_set_event_tap_run_loop(NULL);
     CFRelease(source);
     CFRelease(state.tap);
     return 0;
+}
+
+void deskbridge_event_tap_stop(void) {
+    CFRunLoopRef run_loop = db_copy_event_tap_run_loop();
+    if (run_loop == NULL) {
+        pthread_mutex_lock(&db_event_tap_lock);
+        db_event_tap_stop_requested = true;
+        pthread_mutex_unlock(&db_event_tap_lock);
+        return;
+    }
+    CFRunLoopStop(run_loop);
+    CFRunLoopWakeUp(run_loop);
+    CFRelease(run_loop);
 }
 
 int32_t deskbridge_macos_set_cursor_position(double x, double y) {

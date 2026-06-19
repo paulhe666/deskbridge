@@ -1,4 +1,5 @@
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -23,6 +24,13 @@ pub fn run(server: &str) -> std::io::Result<()> {
     let mut stream = TcpStream::connect(server)?;
     stream.set_nodelay(true)?;
     let writer = SharedWriter::new(stream.try_clone()?);
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let stop_stream = stream.try_clone()?;
+    let stop_flag = Arc::clone(&stop_requested);
+    crate::shutdown::spawn_gui_stop_watcher(move || {
+        stop_flag.store(true, Ordering::Release);
+        let _ = stop_stream.shutdown(Shutdown::Both);
+    });
     let (width, height) = crate::input::screen_size();
     eprintln!("connected; sending hello with screen {width}x{height}");
     writer.write(crate::protocol::Frame::new(
@@ -38,7 +46,11 @@ pub fn run(server: &str) -> std::io::Result<()> {
     let mut input_log = InputLog::new();
 
     loop {
-        let frame = protocol::read_frame(&mut stream)?;
+        let frame = match protocol::read_frame(&mut stream) {
+            Ok(frame) => frame,
+            Err(_) if stop_requested.load(Ordering::Acquire) => return Ok(()),
+            Err(e) => return Err(e),
+        };
         match frame.kind {
             FrameKind::Input => {
                 let event = protocol::decode_input(&frame.payload)?;
@@ -76,16 +88,16 @@ pub fn run(server: &str) -> std::io::Result<()> {
     }
 }
 
-#[derive(Clone)]
 struct InputApplier {
-    sender: Sender<InputEvent>,
+    sender: Option<Sender<InputEvent>>,
+    worker: Option<thread::JoinHandle<()>>,
 }
 
 impl InputApplier {
     fn spawn() -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::channel();
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-        thread::spawn(move || match InputSink::new() {
+        let worker = thread::spawn(move || match InputSink::new() {
             Ok(mut input) => {
                 let _ = ready_sender.send(Ok(()));
                 input_worker_loop(&mut input, receiver);
@@ -99,12 +111,27 @@ impl InputApplier {
             Ok(Err(e)) => return Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
             Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e)),
         }
-        Ok(Self { sender })
+        Ok(Self {
+            sender: Some(sender),
+            worker: Some(worker),
+        })
     }
 
     fn send(&self, event: InputEvent) {
-        if let Err(e) = self.sender.send(event) {
+        let Some(sender) = self.sender.as_ref() else {
+            return;
+        };
+        if let Err(e) = sender.send(event) {
             eprintln!("input apply queue closed: {e}");
+        }
+    }
+}
+
+impl Drop for InputApplier {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
         }
     }
 }

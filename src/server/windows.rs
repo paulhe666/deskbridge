@@ -22,13 +22,14 @@ use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW,
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetMessageW, GetSystemMetrics, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP,
-    LLMHF_INJECTED, LWA_ALPHA, MSG, MSLLHOOKSTRUCT, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN,
-    SW_SHOWNA, SetCursorPos, SetLayeredWindowAttributes, SetProcessDPIAware, SetWindowsHookExW,
-    ShowWindow, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_DROPFILES,
-    WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_EX_ACCEPTFILES, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, XBUTTON1, XBUTTON2,
+    LLMHF_INJECTED, LWA_ALPHA, MSG, MSLLHOOKSTRUCT, PostMessageW, PostQuitMessage, RegisterClassW,
+    SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNA, SetCursorPos, SetLayeredWindowAttributes,
+    SetProcessDPIAware, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_DROPFILES, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+    WM_XBUTTONUP, WNDCLASSW, WS_EX_ACCEPTFILES, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP, XBUTTON1, XBUTTON2,
 };
 
 use super::{Edge, ServerConfig};
@@ -51,6 +52,7 @@ const CURSOR_LOCK_RADIUS: i32 = 24;
 const RETURN_EDGE_MARGIN: i32 = 4;
 const RETURN_PUSH_THRESHOLD: i32 = 48;
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
+const WM_DESKBRIDGE_STOP: u32 = WM_APP + 0x51;
 
 static CAPTURE_STATE: OnceLock<Arc<Mutex<CaptureState>>> = OnceLock::new();
 static TRANSFER_WRITER: OnceLock<SharedWriter> = OnceLock::new();
@@ -113,6 +115,10 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
         None
     };
     let raw_input = RawInputWindow::create()?;
+    let stop_window = raw_input.hwnd as usize;
+    crate::shutdown::spawn_gui_stop_watcher(move || unsafe {
+        PostMessageW(stop_window as HWND, WM_DESKBRIDGE_STOP, 0, 0);
+    });
     eprintln!("raw mouse input registered for relative movement");
     let hooks = Hooks::install()?;
     eprintln!(
@@ -122,7 +128,11 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
         eprintln!("file drop strip active on the {:?} edge", config.edge);
     }
     message_loop();
-    unlock_cursor();
+    if let Some(state) = CAPTURE_STATE.get() {
+        state.lock().unwrap().shutdown();
+    } else {
+        unlock_cursor();
+    }
     drop(hooks);
     drop(raw_input);
     drop(drop_strip);
@@ -557,6 +567,12 @@ unsafe extern "system" fn raw_input_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message == WM_DESKBRIDGE_STOP {
+        unsafe {
+            PostQuitMessage(0);
+        }
+        return 0;
+    }
     if message == WM_INPUT {
         handle_raw_mouse_input(lparam);
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
@@ -644,6 +660,7 @@ struct CaptureState {
     active: bool,
     local_left_down: bool,
     pressed_keys: HashSet<u16>,
+    pressed_buttons: HashSet<MouseButton>,
 }
 
 impl CaptureState {
@@ -658,6 +675,7 @@ impl CaptureState {
             active: false,
             local_left_down: false,
             pressed_keys: HashSet::new(),
+            pressed_buttons: HashSet::new(),
         }
     }
 
@@ -743,7 +761,7 @@ impl CaptureState {
         if !self.active {
             return;
         }
-        if self.should_release_to_windows(dx) {
+        if self.pressed_buttons.is_empty() && self.should_release_to_windows(dx) {
             self.deactivate();
             return;
         }
@@ -780,6 +798,12 @@ impl CaptureState {
             self.send_input(InputEvent::Key {
                 scancode,
                 state: KeyState::Up,
+            });
+        }
+        for button in self.pressed_buttons.drain().collect::<Vec<_>>() {
+            self.input.send(InputEvent::MouseButton {
+                button,
+                down: false,
             });
         }
         self.active = false;
@@ -851,8 +875,21 @@ impl CaptureState {
         }
     }
 
-    fn send_button(&self, button: MouseButton, down: bool) {
+    fn send_button(&mut self, button: MouseButton, down: bool) {
+        if down {
+            self.pressed_buttons.insert(button);
+        } else {
+            self.pressed_buttons.remove(&button);
+        }
         self.send_input(InputEvent::MouseButton { button, down });
+    }
+
+    fn shutdown(&mut self) {
+        if self.active {
+            self.deactivate();
+        } else {
+            unlock_cursor();
+        }
     }
 
     fn send_wheel(&self, horizontal: i16, vertical: i16) {

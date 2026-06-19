@@ -1,25 +1,18 @@
-use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
 use std::ffi::CStr;
 use std::fs;
-use std::io::{BufRead, BufReader};
 #[cfg(target_os = "macos")]
 use std::os::raw::c_char;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
 
 use eframe::egui;
 use egui::{Color32, RichText, Stroke};
 
-use crate::clipboard::{Clipboard, ClipboardApi};
 use crate::config::{AppConfig, Language, ModifierTarget, Role};
-use crate::protocol::ClipboardPayload;
+use crate::control::{ControlBackend, ProcessBackend};
 use crate::server::Edge;
 
-const MAX_LOG_LINES: usize = 500;
 const ICON_PNG: &[u8] = include_bytes!("../assets/deskbridge.png");
 const STATUS_ICON_PNG: &[u8] = include_bytes!("../assets/deskbridge-status.png");
 const BG: Color32 = Color32::from_rgb(246, 248, 251);
@@ -61,7 +54,7 @@ pub fn run() -> eframe::Result {
 
 struct DeskbridgeApp {
     config: AppConfig,
-    service: ServiceProcess,
+    service: ProcessBackend,
     status_commands: Receiver<StatusMenuCommand>,
     status: String,
     icon: Option<egui::TextureHandle>,
@@ -119,7 +112,7 @@ impl DeskbridgeApp {
         Self {
             status: tr(config.language, "ready").to_string(),
             config,
-            service: ServiceProcess::default(),
+            service: ProcessBackend::default(),
             status_commands,
             icon,
             show_settings: false,
@@ -162,7 +155,7 @@ impl DeskbridgeApp {
         if files.is_empty() {
             return;
         }
-        match publish_files_to_clipboard(&files) {
+        match self.service.publish_files(&files) {
             Ok(()) => {
                 self.status = format!(
                     "{} {}",
@@ -592,12 +585,12 @@ impl DeskbridgeApp {
                         .stick_to_bottom(true)
                         .max_height((height - 116.0).max(260.0))
                         .show(ui, |ui| {
-                            if self.service.logs.is_empty() {
+                            if self.service.logs().is_empty() {
                                 ui.label(
                                     RichText::new(tr(self.config.language, "no_logs")).color(MUTED),
                                 );
                             } else {
-                                for line in &self.service.logs {
+                                for line in self.service.logs() {
                                     ui.monospace(
                                         RichText::new(line).color(Color32::from_rgb(51, 65, 85)),
                                     );
@@ -782,12 +775,12 @@ impl DeskbridgeApp {
                         .stick_to_bottom(true)
                         .max_height(max_height)
                         .show(ui, |ui| {
-                            if self.service.logs.is_empty() {
+                            if self.service.logs().is_empty() {
                                 ui.label(
                                     RichText::new(tr(self.config.language, "no_logs")).color(MUTED),
                                 );
                             } else {
-                                for line in &self.service.logs {
+                                for line in self.service.logs() {
                                     ui.monospace(
                                         RichText::new(line).color(Color32::from_rgb(51, 65, 85)),
                                     );
@@ -797,164 +790,6 @@ impl DeskbridgeApp {
                 });
         });
     }
-}
-
-#[derive(Default)]
-struct ServiceProcess {
-    child: Option<Child>,
-    receiver: Option<Receiver<String>>,
-    logs: VecDeque<String>,
-}
-
-impl ServiceProcess {
-    fn is_running(&mut self) -> bool {
-        if let Some(child) = self.child.as_mut() {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    self.push_log(format!("Service exited: {status}"));
-                    self.child = None;
-                    false
-                }
-                Ok(None) => true,
-                Err(e) => {
-                    self.push_log(format!("Service status failed: {e}"));
-                    false
-                }
-            }
-        } else {
-            false
-        }
-    }
-
-    fn start(&mut self, config: &AppConfig) -> std::io::Result<()> {
-        if self.is_running() {
-            return Ok(());
-        }
-        let exe = std::env::current_exe()?;
-        let mut command = Command::new(exe);
-        match config.role {
-            Role::Server => {
-                command
-                    .arg("server")
-                    .arg("--bind")
-                    .arg(&config.bind)
-                    .arg("--edge")
-                    .arg(match config.edge {
-                        Edge::Left => "left",
-                        Edge::Right => "right",
-                    });
-                command
-                    .env(
-                        "DESKBRIDGE_MAC_COMMAND_MAPPING",
-                        config.mac_command_mapping.as_str(),
-                    )
-                    .env(
-                        "DESKBRIDGE_MAC_CONTROL_MAPPING",
-                        config.mac_control_mapping.as_str(),
-                    )
-                    .env(
-                        "DESKBRIDGE_MAC_OPTION_MAPPING",
-                        config.mac_option_mapping.as_str(),
-                    );
-            }
-            Role::Client => {
-                command.arg("client").arg("--server").arg(&config.server);
-                command
-                    .env(
-                        "DESKBRIDGE_SCROLL_SCALE",
-                        format!("{:.3}", config.scroll_scale),
-                    )
-                    .env(
-                        "DESKBRIDGE_SCROLL_RESPONSE",
-                        format!("{:.3}", config.scroll_response),
-                    )
-                    .env(
-                        "DESKBRIDGE_SCROLL_MAX_STEP",
-                        format!("{:.1}", config.scroll_max_step),
-                    )
-                    .env(
-                        "DESKBRIDGE_SCROLL_FRAME_MS",
-                        config.scroll_frame_ms.to_string(),
-                    );
-            }
-        }
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = command.spawn()?;
-        let (sender, receiver) = mpsc::channel();
-        if let Some(stdout) = child.stdout.take() {
-            spawn_log_reader(stdout, sender.clone());
-        }
-        if let Some(stderr) = child.stderr.take() {
-            spawn_log_reader(stderr, sender);
-        }
-        self.receiver = Some(receiver);
-        self.child = Some(child);
-        Ok(())
-    }
-
-    fn stop(&mut self) -> std::io::Result<()> {
-        if let Some(mut child) = self.child.take() {
-            child.kill()?;
-            let _ = child.wait();
-        }
-        Ok(())
-    }
-
-    fn command_preview(&self, config: &AppConfig) -> String {
-        match config.role {
-            Role::Server => format!(
-                "deskbridge server --bind {} --edge {}",
-                config.bind,
-                match config.edge {
-                    Edge::Left => "left",
-                    Edge::Right => "right",
-                }
-            ),
-            Role::Client => format!("deskbridge client --server {}", config.server),
-        }
-    }
-
-    fn collect_logs(&mut self) {
-        if let Some(receiver) = &self.receiver {
-            for line in receiver.try_iter().collect::<Vec<_>>() {
-                self.push_log(line);
-            }
-        }
-    }
-
-    fn push_log(&mut self, line: String) {
-        if self.logs.len() >= MAX_LOG_LINES {
-            self.logs.pop_front();
-        }
-        self.logs.push_back(line);
-    }
-
-    fn clear_logs(&mut self) {
-        self.logs.clear();
-    }
-}
-
-impl Drop for ServiceProcess {
-    fn drop(&mut self) {
-        let _ = self.stop();
-    }
-}
-
-fn spawn_log_reader<R>(reader: R, sender: mpsc::Sender<String>)
-where
-    R: std::io::Read + Send + 'static,
-{
-    thread::spawn(move || {
-        let reader = BufReader::new(reader);
-        for line in reader.lines().map_while(Result::ok) {
-            let _ = sender.send(line);
-        }
-    });
-}
-
-fn publish_files_to_clipboard(files: &[PathBuf]) -> std::io::Result<()> {
-    let mut clipboard = Clipboard::new()?;
-    clipboard.write(&ClipboardPayload::Files(files.to_vec()))
 }
 
 fn app_icon() -> Option<egui::IconData> {

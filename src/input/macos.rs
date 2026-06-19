@@ -607,6 +607,11 @@ impl Drop for InputSink {
                 .native
                 .post_key(keycode, false, EventFlags::empty(), false);
         }
+        for (event_type, button) in self.mouse_buttons.release_events() {
+            let _ = self
+                .native
+                .post_mouse(event_type, button, self.mouse_position, 0, 0, 0);
+        }
     }
 }
 
@@ -652,6 +657,20 @@ impl MouseButtons {
         } else {
             None
         }
+    }
+
+    fn release_events(&mut self) -> Vec<(u8, u8)> {
+        let mut events = Vec::new();
+        if std::mem::take(&mut self.left) {
+            events.push((NATIVE_MOUSE_LEFT_UP, NATIVE_BUTTON_LEFT));
+        }
+        if std::mem::take(&mut self.right) {
+            events.push((NATIVE_MOUSE_RIGHT_UP, NATIVE_BUTTON_RIGHT));
+        }
+        if std::mem::take(&mut self.other) {
+            events.push((NATIVE_MOUSE_OTHER_UP, NATIVE_BUTTON_CENTER));
+        }
+        events
     }
 }
 

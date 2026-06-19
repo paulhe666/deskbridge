@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod macos_capture;
 #[cfg(not(any(windows, target_os = "macos")))]
 mod unsupported;
 #[cfg(windows)]

@@ -27,6 +27,10 @@ jobs:
         shell: powershell
         run: choco install innosetup --yes --no-progress
 
+      - name: Test
+        shell: powershell
+        run: cargo test
+
       - name: Build installer
         shell: powershell
         run: .\scripts\package_windows.ps1

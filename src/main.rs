@@ -3,11 +3,13 @@
 mod client;
 mod clipboard;
 mod config;
+mod control;
 mod file_transfer;
 mod gui;
 mod input;
 mod protocol;
 mod server;
+mod shutdown;
 mod transport;
 
 use std::env;
