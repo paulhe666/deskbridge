@@ -7,6 +7,7 @@ mod control;
 mod file_transfer;
 mod gui;
 mod input;
+mod pointer;
 mod protocol;
 mod server;
 mod shutdown;

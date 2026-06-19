@@ -35,6 +35,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use super::{Edge, ServerConfig};
 use crate::clipboard::{Clipboard, ClipboardApi};
 use crate::file_transfer;
+use crate::pointer::{MotionAction, PointerRouter};
 use crate::protocol::{
     self, ClipboardPayload, Frame, FrameKind, InputEvent, KeyState, MouseButton,
 };
@@ -47,10 +48,7 @@ const DEFAULT_INPUT_FLUSH_MS: u64 = 2;
 const INPUT_BATCH_LIMIT: usize = 64;
 const DROP_STRIP_WIDTH: i32 = 18;
 const DROP_STRIP_ALPHA: u8 = 48;
-const EDGE_TRIGGER_MARGIN: i32 = 6;
 const CURSOR_LOCK_RADIUS: i32 = 24;
-const RETURN_EDGE_MARGIN: i32 = 4;
-const RETURN_PUSH_THRESHOLD: i32 = 48;
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
 const WM_DESKBRIDGE_STOP: u32 = WM_APP + 0x51;
 
@@ -145,6 +143,7 @@ fn read_client_hello(stream: &mut TcpStream) -> std::io::Result<(i32, i32)> {
         return Ok((DEFAULT_REMOTE_WIDTH, DEFAULT_REMOTE_HEIGHT));
     }
     let hello = protocol::decode_hello(&frame.payload)?;
+    protocol::validate_version(hello)?;
     let width = hello.screen_width.unwrap_or(DEFAULT_REMOTE_WIDTH as u32) as i32;
     let height = hello.screen_height.unwrap_or(DEFAULT_REMOTE_HEIGHT as u32) as i32;
     Ok((width.max(1), height.max(1)))
@@ -652,35 +651,26 @@ fn send_dropped_files(files: Vec<PathBuf>) {
 
 struct CaptureState {
     input: InputEmitter,
-    edge: Edge,
+    pointer: PointerRouter,
     win_size: (i32, i32),
-    remote_size: (i32, i32),
-    remote_pos: (i32, i32),
-    return_push: i32,
-    active: bool,
-    local_left_down: bool,
     pressed_keys: HashSet<u16>,
     pressed_buttons: HashSet<MouseButton>,
 }
 
 impl CaptureState {
     fn new(input: InputEmitter, edge: Edge, remote_size: (i32, i32)) -> Self {
+        let win_size = screen_size();
         Self {
             input,
-            edge,
-            win_size: screen_size(),
-            remote_size,
-            remote_pos: (0, 0),
-            return_push: 0,
-            active: false,
-            local_left_down: false,
+            pointer: PointerRouter::new(edge, win_size, remote_size),
+            win_size,
             pressed_keys: HashSet::new(),
             pressed_buttons: HashSet::new(),
         }
     }
 
     fn handle_keyboard(&mut self, message: u32, hook: &KBDLLHOOKSTRUCT) -> bool {
-        if !self.active {
+        if !self.pointer.is_remote() {
             return false;
         }
         let down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
@@ -712,33 +702,26 @@ impl CaptureState {
         if message == WM_MOUSEMOVE {
             return self.handle_mouse_move(hook);
         }
-        if !self.active {
-            match message {
-                WM_LBUTTONDOWN => self.local_left_down = true,
-                WM_LBUTTONUP => self.local_left_down = false,
-                _ => {}
+        if !self.pointer.is_remote() {
+            if let Some((_, down)) = mouse_button_transition(message, hook.mouseData) {
+                self.pointer.observe_local_button(down);
             }
             return false;
         }
 
-        match message {
-            WM_LBUTTONDOWN => self.send_button(MouseButton::Left, true),
-            WM_LBUTTONUP => self.send_button(MouseButton::Left, false),
-            WM_RBUTTONDOWN => self.send_button(MouseButton::Right, true),
-            WM_RBUTTONUP => self.send_button(MouseButton::Right, false),
-            WM_MBUTTONDOWN => self.send_button(MouseButton::Middle, true),
-            WM_MBUTTONUP => self.send_button(MouseButton::Middle, false),
-            WM_XBUTTONDOWN => self.send_button(xbutton(hook.mouseData), true),
-            WM_XBUTTONUP => self.send_button(xbutton(hook.mouseData), false),
-            WM_MOUSEWHEEL => self.send_wheel(0, wheel_pixels(hook.mouseData)),
-            WM_MOUSEHWHEEL => self.send_wheel(wheel_pixels(hook.mouseData), 0),
-            _ => {}
+        match mouse_button_transition(message, hook.mouseData) {
+            Some((button, down)) => self.send_button(button, down),
+            None => match message {
+                WM_MOUSEWHEEL => self.send_wheel(0, wheel_pixels(hook.mouseData)),
+                WM_MOUSEHWHEEL => self.send_wheel(wheel_pixels(hook.mouseData), 0),
+                _ => {}
+            },
         }
         true
     }
 
     fn handle_mouse_move(&mut self, hook: &MSLLHOOKSTRUCT) -> bool {
-        if self.active {
+        if self.pointer.is_remote() {
             if (hook.flags & LLMHF_INJECTED) != 0 {
                 return true;
             }
@@ -746,54 +729,58 @@ impl CaptureState {
             return true;
         }
 
-        self.win_size = screen_size();
-        if self.crossed_edge(hook.pt.x) {
-            if self.local_left_down {
-                return false;
-            }
-            self.activate(hook.pt.y);
-            return true;
+        if (hook.flags & LLMHF_INJECTED) != 0 {
+            return false;
         }
-        false
+        self.win_size = screen_size();
+        self.pointer.update_local_size(self.win_size);
+        if let MotionAction::EnterRemote { x, y } =
+            self.pointer.observe_local_motion(hook.pt.x, hook.pt.y)
+        {
+            self.activate(x, y);
+            true
+        } else {
+            false
+        }
     }
 
     fn handle_raw_mouse_delta(&mut self, dx: i32, dy: i32) {
-        if !self.active {
+        if !self.pointer.is_remote() {
             return;
         }
-        if self.pressed_buttons.is_empty() && self.should_release_to_windows(dx) {
-            self.deactivate();
-            return;
+        match self
+            .pointer
+            .observe_remote_motion(dx, dy, self.pressed_buttons.is_empty())
+        {
+            MotionAction::MoveRemote { dx, dy } => {
+                self.send_input(InputEvent::MouseDelta { dx, dy });
+            }
+            MotionAction::ReturnLocal { x, y } => self.finish_remote_session(x, y),
+            MotionAction::Local | MotionAction::EnterRemote { .. } => {}
         }
-        self.remote_pos.0 = clamp(self.remote_pos.0 + dx, 0, self.remote_size.0 - 1);
-        self.remote_pos.1 = clamp(self.remote_pos.1 + dy, 0, self.remote_size.1 - 1);
-        self.send_input(InputEvent::MouseDelta { dx, dy });
     }
 
-    fn activate(&mut self, local_y: i32) {
-        self.active = true;
-        self.local_left_down = false;
+    fn activate(&mut self, remote_x: i32, remote_y: i32) {
         self.win_size = screen_size();
-        self.remote_pos = match self.edge {
-            Edge::Right => (0, scaled_y(local_y, self.win_size.1, self.remote_size.1)),
-            Edge::Left => (
-                self.remote_size.0 - 1,
-                scaled_y(local_y, self.win_size.1, self.remote_size.1),
-            ),
-        };
-        self.return_push = 0;
         self.send_input(InputEvent::MouseEnter {
-            x: self.remote_pos.0,
-            y: self.remote_pos.1,
+            x: remote_x,
+            y: remote_y,
         });
         self.lock_cursor_to_anchor();
         eprintln!(
             "entered client control at {},{}; press Scroll Lock to release",
-            self.remote_pos.0, self.remote_pos.1
+            remote_x, remote_y
         );
     }
 
     fn deactivate(&mut self) {
+        let Some((x, y)) = self.pointer.force_local() else {
+            return;
+        };
+        self.finish_remote_session(x, y);
+    }
+
+    fn finish_remote_session(&mut self, x: i32, y: i32) {
         for scancode in self.pressed_keys.drain().collect::<Vec<_>>() {
             self.send_input(InputEvent::Key {
                 scancode,
@@ -806,44 +793,12 @@ impl CaptureState {
                 down: false,
             });
         }
-        self.active = false;
-        self.return_push = 0;
+        self.send_input(InputEvent::MouseLeave);
         unlock_cursor();
-        let x = match self.edge {
-            Edge::Right => self.win_size.0.saturating_sub(2),
-            Edge::Left => 1,
-        };
         unsafe {
-            SetCursorPos(x, self.win_size.1 / 2);
+            SetCursorPos(x, y);
         }
         eprintln!("released control back to Windows");
-    }
-
-    fn crossed_edge(&self, x: i32) -> bool {
-        match self.edge {
-            Edge::Right => x >= self.win_size.0.saturating_sub(EDGE_TRIGGER_MARGIN),
-            Edge::Left => x <= EDGE_TRIGGER_MARGIN,
-        }
-    }
-
-    fn should_release_to_windows(&mut self, dx: i32) -> bool {
-        let pushing_out = match self.edge {
-            Edge::Right => dx < 0,
-            Edge::Left => dx > 0,
-        };
-        let at_return_edge = match self.edge {
-            Edge::Right => self.remote_pos.0 <= RETURN_EDGE_MARGIN,
-            Edge::Left => {
-                self.remote_pos.0 >= self.remote_size.0.saturating_sub(1 + RETURN_EDGE_MARGIN)
-            }
-        };
-        if !pushing_out || !at_return_edge {
-            self.return_push = 0;
-            return false;
-        }
-
-        self.return_push += dx.abs();
-        self.return_push >= RETURN_PUSH_THRESHOLD
     }
 
     fn anchor(&self) -> (i32, i32) {
@@ -885,7 +840,7 @@ impl CaptureState {
     }
 
     fn shutdown(&mut self) {
-        if self.active {
+        if self.pointer.is_remote() {
             self.deactivate();
         } else {
             unlock_cursor();
@@ -1185,6 +1140,20 @@ fn xbutton(mouse_data: u32) -> MouseButton {
     }
 }
 
+fn mouse_button_transition(message: u32, mouse_data: u32) -> Option<(MouseButton, bool)> {
+    match message {
+        WM_LBUTTONDOWN => Some((MouseButton::Left, true)),
+        WM_LBUTTONUP => Some((MouseButton::Left, false)),
+        WM_RBUTTONDOWN => Some((MouseButton::Right, true)),
+        WM_RBUTTONUP => Some((MouseButton::Right, false)),
+        WM_MBUTTONDOWN => Some((MouseButton::Middle, true)),
+        WM_MBUTTONUP => Some((MouseButton::Middle, false)),
+        WM_XBUTTONDOWN => Some((xbutton(mouse_data), true)),
+        WM_XBUTTONUP => Some((xbutton(mouse_data), false)),
+        _ => None,
+    }
+}
+
 fn wheel_pixels(mouse_data: u32) -> i16 {
     let delta = ((mouse_data >> 16) & 0xffff) as u16 as i16 as i32;
     clamp(
@@ -1214,14 +1183,6 @@ fn drop_strip_enabled() -> bool {
 
 fn wide_null(value: &str) -> Vec<u16> {
     OsStr::new(value).encode_wide().chain(Some(0)).collect()
-}
-
-fn scaled_y(y: i32, from_height: i32, to_height: i32) -> i32 {
-    clamp(
-        (y as i64 * to_height.max(1) as i64 / from_height.max(1) as i64) as i32,
-        0,
-        to_height.saturating_sub(1),
-    )
 }
 
 fn clamp(value: i32, min: i32, max: i32) -> i32 {

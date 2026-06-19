@@ -656,11 +656,13 @@ int32_t deskbridge_macos_set_cursor_position(double x, double y) {
 
 int32_t deskbridge_macos_hide_cursor(void) {
     CGError error = CGDisplayHideCursor(CGMainDisplayID());
+    CGAssociateMouseAndMouseCursorPosition(true);
     return error == kCGErrorSuccess ? 0 : (int32_t)error;
 }
 
 int32_t deskbridge_macos_show_cursor(void) {
     CGError error = CGDisplayShowCursor(CGMainDisplayID());
+    CGAssociateMouseAndMouseCursorPosition(true);
     return error == kCGErrorSuccess ? 0 : (int32_t)error;
 }
 
@@ -844,10 +846,11 @@ int32_t deskbridge_hid_cycle_keyboard_input_source(DeskbridgeHidContext *context
 
 void deskbridge_main_display_size(uint32_t *width, uint32_t *height) {
     CGDirectDisplayID display = CGMainDisplayID();
+    CGRect bounds = CGDisplayBounds(display);
     if (width != NULL) {
-        *width = (uint32_t)CGDisplayPixelsWide(display);
+        *width = (uint32_t)CGRectGetWidth(bounds);
     }
     if (height != NULL) {
-        *height = (uint32_t)CGDisplayPixelsHigh(display);
+        *height = (uint32_t)CGRectGetHeight(bounds);
     }
 }

@@ -16,10 +16,6 @@ const DEFAULT_INPUT_FLUSH_MS: u64 = 2;
 const INPUT_BATCH_LIMIT: usize = 64;
 
 pub fn run(server: &str) -> std::io::Result<()> {
-    eprintln!("initializing local input sink");
-    let input = InputApplier::spawn()?;
-    eprintln!("initializing local clipboard");
-    let mut clipboard = Clipboard::new()?;
     eprintln!("connecting to {server}");
     let mut stream = TcpStream::connect(server)?;
     stream.set_nodelay(true)?;
@@ -38,7 +34,22 @@ pub fn run(server: &str) -> std::io::Result<()> {
         protocol::hello_payload_with_screen(width, height),
     ))?;
 
-    eprintln!("client ready");
+    let server_hello = protocol::read_frame(&mut stream)?;
+    if server_hello.kind != FrameKind::Hello {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "server did not complete the protocol handshake",
+        ));
+    }
+    let server_hello = protocol::decode_hello(&server_hello.payload)?;
+    protocol::validate_version(server_hello)?;
+
+    eprintln!("initializing local input sink");
+    let input = InputApplier::spawn()?;
+    eprintln!("initializing local clipboard");
+    let mut clipboard = Clipboard::new()?;
+
+    eprintln!("client ready (protocol v{})", protocol::VERSION);
     let receive_root = std::env::temp_dir().join("deskbridge-received");
     let mut incoming_files = file_transfer::IncomingBundle::new(receive_root);
     let clipboard_state = Arc::new(Mutex::new(ClipboardSyncState::default()));

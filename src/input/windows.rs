@@ -23,6 +23,7 @@ pub struct InputSink {
     pressed_buttons: HashSet<MouseButton>,
     mouse_position: (i32, i32),
     screen_size: (i32, i32),
+    remote_active: bool,
 }
 
 impl InputSink {
@@ -45,13 +46,19 @@ impl InputSink {
             pressed_buttons: HashSet::new(),
             mouse_position,
             screen_size,
+            remote_active: false,
         })
     }
 
     pub fn apply(&mut self, event: InputEvent) -> std::io::Result<()> {
         match event {
-            InputEvent::Key { scancode, state } => self.key(scancode, state),
             InputEvent::MouseEnter { x, y } => self.mouse_enter(x, y),
+            InputEvent::MouseLeave => {
+                self.mouse_leave();
+                Ok(())
+            }
+            _ if !self.remote_active => Ok(()),
+            InputEvent::Key { scancode, state } => self.key(scancode, state),
             InputEvent::MouseDelta { dx, dy } => self.mouse_delta(dx, dy),
             InputEvent::MouseButton { button, down } => self.mouse_button(button, down),
             InputEvent::MouseWheel {
@@ -80,6 +87,10 @@ impl InputSink {
     }
 
     fn mouse_enter(&mut self, x: i32, y: i32) -> std::io::Result<()> {
+        if self.remote_active {
+            self.release_remote_input();
+        }
+        self.remote_active = true;
         self.screen_size = screen_size_i32();
         self.mouse_position = (
             x.clamp(0, self.screen_size.0 - 1),
@@ -165,16 +176,25 @@ impl InputSink {
         }
         Ok(())
     }
-}
 
-impl Drop for InputSink {
-    fn drop(&mut self) {
+    fn mouse_leave(&mut self) {
+        self.release_remote_input();
+        self.remote_active = false;
+    }
+
+    fn release_remote_input(&mut self) {
         for scancode in self.pressed_keys.drain().collect::<Vec<_>>() {
             let _ = send_key(scancode, true);
         }
         for button in self.pressed_buttons.drain().collect::<Vec<_>>() {
             let _ = release_mouse_button(button);
         }
+    }
+}
+
+impl Drop for InputSink {
+    fn drop(&mut self) {
+        self.release_remote_input();
     }
 }
 

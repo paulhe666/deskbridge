@@ -51,6 +51,8 @@ unsafe extern "C" {
     ) -> i32;
     fn deskbridge_hid_cycle_keyboard_input_source(context: *mut DeskbridgeHidContext) -> i32;
     fn deskbridge_main_display_size(width: *mut u32, height: *mut u32);
+    fn deskbridge_macos_hide_cursor() -> i32;
+    fn deskbridge_macos_show_cursor() -> i32;
 }
 
 const COMMAND_KEYCODE: u16 = 55;
@@ -261,6 +263,8 @@ pub struct InputSink {
     last_input_source_toggle: Option<Instant>,
     last_backspace_repeat: Option<Instant>,
     backspace_down_since: Option<Instant>,
+    remote_active: bool,
+    cursor_hidden: bool,
 }
 
 impl InputSink {
@@ -282,6 +286,10 @@ impl InputSink {
             );
             request_accessibility_permission();
         }
+        let cursor_hidden = unsafe { deskbridge_macos_hide_cursor() } == 0;
+        if !cursor_hidden {
+            eprintln!("warning: failed to hide inactive macOS client cursor");
+        }
         Ok(Self {
             native,
             pressed_keys: HashSet::new(),
@@ -295,13 +303,17 @@ impl InputSink {
             last_input_source_toggle: None,
             last_backspace_repeat: None,
             backspace_down_since: None,
+            remote_active: false,
+            cursor_hidden,
         })
     }
 
     pub fn apply(&mut self, event: InputEvent) -> std::io::Result<()> {
         match event {
-            InputEvent::Key { scancode, state } => self.key(scancode, state),
             InputEvent::MouseEnter { x, y } => self.mouse_enter(x, y),
+            InputEvent::MouseLeave => self.mouse_leave(),
+            _ if !self.remote_active => Ok(()),
+            InputEvent::Key { scancode, state } => self.key(scancode, state),
             InputEvent::MouseDelta { dx, dy } => self.mouse_delta(dx, dy),
             InputEvent::MouseButton { button, down } => self.mouse_button(button, down),
             InputEvent::MouseWheel {
@@ -524,9 +536,33 @@ impl InputSink {
     }
 
     fn mouse_enter(&mut self, x: i32, y: i32) -> std::io::Result<()> {
+        if self.remote_active {
+            self.release_remote_input();
+        }
+        if self.cursor_hidden {
+            check_native_status(
+                unsafe { deskbridge_macos_show_cursor() },
+                "failed to show macOS client cursor",
+            )?;
+            self.cursor_hidden = false;
+        }
+        self.remote_active = true;
         self.screen_size = screen_size_i32();
         self.set_mouse_position(x, y);
         self.post_pointer_motion(0, 0)
+    }
+
+    fn mouse_leave(&mut self) -> std::io::Result<()> {
+        self.release_remote_input();
+        self.remote_active = false;
+        if !self.cursor_hidden {
+            check_native_status(
+                unsafe { deskbridge_macos_hide_cursor() },
+                "failed to hide inactive macOS client cursor",
+            )?;
+            self.cursor_hidden = true;
+        }
+        Ok(())
     }
 
     fn mouse_delta(&mut self, dx: i32, dy: i32) -> std::io::Result<()> {
@@ -598,10 +634,8 @@ impl InputSink {
     fn mouse_wheel(&self, horizontal: i16, vertical: i16) -> std::io::Result<()> {
         self.scroll.push(horizontal as i32, vertical as i32)
     }
-}
 
-impl Drop for InputSink {
-    fn drop(&mut self) {
+    fn release_remote_input(&mut self) {
         for keycode in self.pressed_keys.drain().collect::<Vec<_>>() {
             let _ = self
                 .native
@@ -611,6 +645,20 @@ impl Drop for InputSink {
             let _ = self
                 .native
                 .post_mouse(event_type, button, self.mouse_position, 0, 0, 0);
+        }
+        self.shift_tap_candidate = None;
+        self.last_backspace_repeat = None;
+        self.backspace_down_since = None;
+    }
+}
+
+impl Drop for InputSink {
+    fn drop(&mut self) {
+        self.release_remote_input();
+        if self.cursor_hidden {
+            if unsafe { deskbridge_macos_show_cursor() } == 0 {
+                self.cursor_hidden = false;
+            }
         }
     }
 }

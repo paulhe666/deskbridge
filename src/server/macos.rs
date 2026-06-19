@@ -6,10 +6,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::macos_capture::{KeyboardRouter, ModifierMapping, MotionAction, PointerRouter};
+use super::macos_capture::{KeyboardRouter, ModifierMapping};
 use super::{Edge, ServerConfig};
 use crate::clipboard::{Clipboard, ClipboardApi};
 use crate::file_transfer;
+use crate::pointer::{MotionAction, PointerRouter};
 use crate::protocol::{self, ClipboardPayload, Frame, FrameKind, InputEvent, MouseButton};
 use crate::transport::SharedWriter;
 
@@ -127,6 +128,7 @@ fn read_client_hello(stream: &mut TcpStream) -> std::io::Result<(i32, i32)> {
         return Ok((DEFAULT_REMOTE_WIDTH, DEFAULT_REMOTE_HEIGHT));
     }
     let hello = protocol::decode_hello(&frame.payload)?;
+    protocol::validate_version(hello)?;
     let width = hello.screen_width.unwrap_or(DEFAULT_REMOTE_WIDTH as u32) as i32;
     let height = hello.screen_height.unwrap_or(DEFAULT_REMOTE_HEIGHT as u32) as i32;
     Ok((width.max(1), height.max(1)))
@@ -662,11 +664,11 @@ impl CaptureState {
             let dy = event.c as i32;
             if dx == 0 && dy == 0 {
                 self.recenter_local_cursor();
-                return false;
+                return true;
             }
             if self.pointer.bogus_warp_delta(dx, dy) {
                 self.recenter_local_cursor();
-                return false;
+                return true;
             }
 
             match self
@@ -678,14 +680,14 @@ impl CaptureState {
                     self.recenter_local_cursor();
                 }
                 MotionAction::ReturnLocal { x, y } => {
-                    self.release_remote_keys();
+                    self.finish_remote_session();
                     self.restore_local_cursor();
                     self.set_cursor_position(x, y);
                     eprintln!("released control back to macOS");
                 }
                 MotionAction::Local | MotionAction::EnterRemote { .. } => {}
             }
-            return false;
+            return true;
         }
 
         self.pointer.update_local_size(screen_size_i32());
@@ -693,13 +695,14 @@ impl CaptureState {
             .pointer
             .observe_local_motion(event.x.round() as i32, event.y.round() as i32)
         {
+            self.send_input(InputEvent::MouseEnter { x, y });
             for input in self.keyboard.sync_flags(event.d as u64) {
                 self.send_input(input);
             }
             self.hide_local_cursor();
             self.recenter_local_cursor();
-            self.send_input(InputEvent::MouseEnter { x, y });
             eprintln!("entered Windows control at {x},{y}; push back through the edge to release");
+            return true;
         }
         false
     }
@@ -809,9 +812,20 @@ impl CaptureState {
         }
     }
 
-    fn restore_to_local(&mut self) {
+    fn finish_remote_session(&mut self) {
         self.release_remote_keys();
         self.release_remote_buttons();
+        self.send_input(InputEvent::MouseLeave);
+    }
+
+    fn restore_to_local(&mut self) {
+        let was_remote = self.pointer.is_remote();
+        if was_remote {
+            self.finish_remote_session();
+        } else {
+            self.release_remote_keys();
+            self.release_remote_buttons();
+        }
         let local_position = self.pointer.force_local();
         self.restore_local_cursor();
         if let Some((x, y)) = local_position {

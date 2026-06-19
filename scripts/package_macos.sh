@@ -53,6 +53,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 perl -0pi -e "s/__VERSION__/$VERSION/g" "$APP/Contents/Info.plist"
 
+APP_SIGN_IDENTITY="${MACOS_APPLICATION_IDENTITY:--}"
+codesign --force --deep --options runtime --sign "$APP_SIGN_IDENTITY" "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
+
 cat > "$DIST/Uninstall Deskbridge.command" <<'UNINSTALL'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -70,6 +74,14 @@ if command -v pkgbuild >/dev/null 2>&1; then
     --identifier local.deskbridge.app \
     --version "$VERSION" \
     "$DIST/Deskbridge-$VERSION.pkg"
+
+  if [ -n "${MACOS_INSTALLER_IDENTITY:-}" ]; then
+    productsign \
+      --sign "$MACOS_INSTALLER_IDENTITY" \
+      "$DIST/Deskbridge-$VERSION.pkg" \
+      "$DIST/Deskbridge-$VERSION-signed.pkg"
+    mv "$DIST/Deskbridge-$VERSION-signed.pkg" "$DIST/Deskbridge-$VERSION.pkg"
+  fi
 fi
 
 ditto -c -k --keepParent "$APP" "$DIST/Deskbridge-macOS-app.zip"

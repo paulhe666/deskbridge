@@ -1,8 +1,8 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-pub const VERSION: u16 = 1;
-pub const CHUNK_SIZE: usize = 64 * 1024;
+pub const VERSION: u16 = 2;
+pub const CHUNK_SIZE: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -75,6 +75,7 @@ pub enum MouseButton {
 pub enum InputEvent {
     Key { scancode: u16, state: KeyState },
     MouseEnter { x: i32, y: i32 },
+    MouseLeave,
     MouseDelta { dx: i32, dy: i32 },
     MouseButton { button: MouseButton, down: bool },
     MouseWheel { horizontal: i16, vertical: i16 },
@@ -136,6 +137,17 @@ pub fn decode_hello(payload: &[u8]) -> std::io::Result<Hello> {
     })
 }
 
+pub fn validate_version(hello: Hello) -> std::io::Result<()> {
+    if hello.version == VERSION {
+        Ok(())
+    } else {
+        Err(invalid_owned(format!(
+            "protocol version mismatch: peer={}, local={VERSION}",
+            hello.version
+        )))
+    }
+}
+
 pub fn encode_input(event: &InputEvent) -> Vec<u8> {
     let mut payload = Vec::new();
     match *event {
@@ -153,6 +165,7 @@ pub fn encode_input(event: &InputEvent) -> Vec<u8> {
             payload.extend_from_slice(&x.to_be_bytes());
             payload.extend_from_slice(&y.to_be_bytes());
         }
+        InputEvent::MouseLeave => payload.push(6),
         InputEvent::MouseButton { button, down } => {
             payload.push(3);
             payload.push(match button {
@@ -238,6 +251,8 @@ pub fn decode_input(payload: &[u8]) -> std::io::Result<InputEvent> {
             let dy = i32::from_be_bytes(payload[5..9].try_into().unwrap());
             Ok(InputEvent::MouseDelta { dx, dy })
         }
+        6 if payload.len() == 1 => Ok(InputEvent::MouseLeave),
+        6 => Err(invalid("invalid mouse leave event")),
         _ => Err(invalid("unknown input event kind")),
     }
 }
@@ -340,4 +355,51 @@ fn invalid(message: &str) -> std::io::Error {
 
 fn invalid_owned(message: String) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_events_round_trip() {
+        let events = [
+            InputEvent::MouseEnter { x: 0, y: 450 },
+            InputEvent::MouseDelta { dx: 12, dy: -7 },
+            InputEvent::MouseButton {
+                button: MouseButton::Left,
+                down: true,
+            },
+            InputEvent::MouseWheel {
+                horizontal: -2,
+                vertical: 8,
+            },
+            InputEvent::Key {
+                scancode: 29,
+                state: KeyState::Down,
+            },
+            InputEvent::MouseLeave,
+        ];
+
+        for event in events {
+            assert_eq!(decode_input(&encode_input(&event)).unwrap(), event);
+        }
+    }
+
+    #[test]
+    fn leave_rejects_trailing_data() {
+        assert!(decode_input(&[6, 0]).is_err());
+    }
+
+    #[test]
+    fn protocol_version_mismatch_is_rejected() {
+        assert!(
+            validate_version(Hello {
+                version: VERSION - 1,
+                screen_width: None,
+                screen_height: None,
+            })
+            .is_err()
+        );
+    }
 }
