@@ -8,12 +8,14 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@tauri-apps/api": "latest",
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
+    "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "lucide-react": "latest",
-    "@tauri-apps/api": "latest"
+    "vite": "latest"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.3"
+  }
 }

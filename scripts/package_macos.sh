@@ -6,12 +6,27 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist/macos"
 VERSION="${DESKBRIDGE_VERSION:-$(awk -F '"' '/^version = / { print $2; exit }' "$ROOT/Cargo.toml")}"
 RELEASE_DIST="$ROOT/dist/releases/$VERSION/macos"
+TAURI_CLI="$ROOT/web/node_modules/.bin/tauri"
+TAURI_APP="$ROOT/target/release/bundle/macos/Deskbridge.app"
 
 cd "$ROOT"
+
 if [ -f "$ROOT/web/package.json" ]; then
-  (cd "$ROOT/web" && npm install && npm run build)
+  npm --prefix "$ROOT/web" install
 fi
-cargo build --release
+
+if [ ! -x "$TAURI_CLI" ]; then
+  echo "Missing Tauri CLI at $TAURI_CLI" >&2
+  echo "Run: npm --prefix web install" >&2
+  exit 1
+fi
+
+"$TAURI_CLI" build --bundles app
+
+if [ ! -d "$TAURI_APP" ]; then
+  echo "Tauri did not create expected app bundle: $TAURI_APP" >&2
+  exit 1
+fi
 
 if [ -d "$DIST" ]; then
   chmod -R u+w "$DIST" || true
@@ -19,44 +34,10 @@ fi
 if ! rm -rf "$DIST" 2>/dev/null; then
   DIST="$ROOT/dist/macos-$(date +%Y%m%d%H%M%S)"
 fi
+mkdir -p "$DIST"
 
 APP="$DIST/Deskbridge.app"
-BIN="$APP/Contents/MacOS/deskbridge"
-RES="$APP/Contents/Resources"
-
-mkdir -p "$(dirname "$BIN")" "$RES"
-cp "$ROOT/target/release/deskbridge" "$BIN"
-cp "$ROOT/assets/deskbridge.icns" "$RES/Deskbridge.icns"
-
-cat > "$APP/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key>
-  <string>deskbridge</string>
-  <key>CFBundleIdentifier</key>
-  <string>local.deskbridge.app</string>
-  <key>CFBundleName</key>
-  <string>Deskbridge</string>
-  <key>CFBundleDisplayName</key>
-  <string>Deskbridge</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleIconFile</key>
-  <string>Deskbridge</string>
-  <key>CFBundleShortVersionString</key>
-  <string>__VERSION__</string>
-  <key>CFBundleVersion</key>
-  <string>__VERSION__</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>12.0</string>
-  <key>NSHighResolutionCapable</key>
-  <true/>
-</dict>
-</plist>
-PLIST
-perl -0pi -e "s/__VERSION__/$VERSION/g" "$APP/Contents/Info.plist"
+ditto "$TAURI_APP" "$APP"
 
 APP_SIGN_IDENTITY="${MACOS_APPLICATION_IDENTITY:--}"
 codesign --force --deep --options runtime --sign "$APP_SIGN_IDENTITY" "$APP"
@@ -79,6 +60,7 @@ if command -v pkgbuild >/dev/null 2>&1; then
   rm -rf "$PKGBUILD_WORK"
   mkdir -p "$PKG_ROOT/Applications"
   ditto "$APP" "$PKG_ROOT/Applications/Deskbridge.app"
+  find "$PKG_ROOT" -name '._*' -delete
   cat > "$COMPONENT_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
