@@ -44,7 +44,7 @@ fn main() -> ExitCode {
     };
 
     let result = match command {
-        Command::Gui => return gui_exit_code(gui::run()),
+        Command::Gui => gui::run(),
         Command::Server { bind, edge } => server::run(server::ServerConfig { bind, edge }),
         Command::Client { server } => client::run(&server),
     };
@@ -93,14 +93,4 @@ Goal:
   Windows/macOS keyboard and mouse sharing, text/image/file clipboard,
   low-latency input, and GUI file transfer."
     );
-}
-
-fn gui_exit_code(result: eframe::Result) -> ExitCode {
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
-    }
 }

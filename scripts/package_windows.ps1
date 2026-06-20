@@ -5,6 +5,12 @@ $Dist = Join-Path $Root "dist\windows"
 $InnoScript = Join-Path $Root "packaging\windows\deskbridge.iss"
 
 Set-Location $Root
+if (Test-Path (Join-Path $Root "web\package.json")) {
+    Push-Location (Join-Path $Root "web")
+    npm install
+    npm run build
+    Pop-Location
+}
 cargo build --release
 
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null

@@ -8,6 +8,9 @@ VERSION="${DESKBRIDGE_VERSION:-$(awk -F '"' '/^version = / { print $2; exit }' "
 RELEASE_DIST="$ROOT/dist/releases/$VERSION/macos"
 
 cd "$ROOT"
+if [ -f "$ROOT/web/package.json" ]; then
+  (cd "$ROOT/web" && npm install && npm run build)
+fi
 cargo build --release
 
 if [ -d "$DIST" ]; then
