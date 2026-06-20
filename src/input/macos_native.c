@@ -656,6 +656,11 @@ int32_t deskbridge_macos_set_cursor_position(double x, double y) {
     return error == kCGErrorSuccess ? 0 : (int32_t)error;
 }
 
+int32_t deskbridge_macos_capture_cursor_association(void) {
+    CGError error = CGAssociateMouseAndMouseCursorPosition(false);
+    return error == kCGErrorSuccess ? 0 : (int32_t)error;
+}
+
 int32_t deskbridge_macos_restore_cursor_association(void) {
     CGError error = CGAssociateMouseAndMouseCursorPosition(true);
     return error == kCGErrorSuccess ? 0 : (int32_t)error;

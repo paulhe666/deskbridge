@@ -17,8 +17,9 @@ use crate::transport::SharedWriter;
 const DEFAULT_REMOTE_WIDTH: i32 = 1366;
 const DEFAULT_REMOTE_HEIGHT: i32 = 768;
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
-const DEFAULT_INPUT_FLUSH_MS: u64 = 2;
+const DEFAULT_INPUT_FLUSH_MS: u64 = 4;
 const INPUT_BATCH_LIMIT: usize = 64;
+const REMOTE_CURSOR_REPIN_INTERVAL: Duration = Duration::from_millis(16);
 const TAP_MOUSE_MOVED: u32 = 1;
 const TAP_MOUSE_LEFT_DOWN: u32 = 2;
 const TAP_MOUSE_LEFT_UP: u32 = 3;
@@ -40,6 +41,7 @@ unsafe extern "C" {
     ) -> i32;
     fn deskbridge_event_tap_stop();
     fn deskbridge_macos_set_cursor_position(x: f64, y: f64) -> i32;
+    fn deskbridge_macos_capture_cursor_association() -> i32;
     fn deskbridge_macos_restore_cursor_association() -> i32;
 }
 
@@ -638,6 +640,7 @@ struct CaptureState {
 #[derive(Debug, Default)]
 struct RemoteCursorLock {
     anchor: Option<(i32, i32)>,
+    last_pin: Option<Instant>,
 }
 
 impl RemoteCursorLock {
@@ -647,6 +650,7 @@ impl RemoteCursorLock {
             edge_y.clamp(0, size.1.saturating_sub(1)),
         );
         self.anchor = Some(anchor);
+        self.last_pin = None;
         anchor
     }
 
@@ -654,8 +658,29 @@ impl RemoteCursorLock {
         self.anchor
     }
 
+    fn mark_pinned(&mut self) {
+        if self.anchor.is_some() {
+            self.last_pin = Some(Instant::now());
+        }
+    }
+
+    fn repin_position_if_due(&mut self) -> Option<(i32, i32)> {
+        let anchor = self.anchor?;
+        let due = self
+            .last_pin
+            .map(|last| last.elapsed() >= REMOTE_CURSOR_REPIN_INTERVAL)
+            .unwrap_or(true);
+        if due {
+            self.last_pin = Some(Instant::now());
+            Some(anchor)
+        } else {
+            None
+        }
+    }
+
     fn end(&mut self) {
         self.anchor = None;
+        self.last_pin = None;
     }
 }
 
@@ -686,7 +711,7 @@ impl CaptureState {
             let dx = event.b as i32;
             let dy = event.c as i32;
             if dx == 0 && dy == 0 {
-                self.pin_remote_cursor();
+                self.repin_remote_cursor_if_due();
                 return true;
             }
 
@@ -696,7 +721,7 @@ impl CaptureState {
             {
                 MotionAction::MoveRemote { dx, dy } => {
                     self.send_input(InputEvent::MouseDelta { dx, dy });
-                    self.pin_remote_cursor();
+                    self.repin_remote_cursor_if_due();
                 }
                 MotionAction::ReturnLocal { x, y } => {
                     self.finish_remote_session();
@@ -746,8 +771,8 @@ impl CaptureState {
             return false;
         }
         self.send_input(InputEvent::MouseWheel {
-            horizontal: clamp_i16(event.a as i32),
-            vertical: clamp_i16(event.b as i32),
+            horizontal: mac_scroll_axis_to_remote(event.a),
+            vertical: mac_scroll_axis_to_remote(event.b),
         });
         true
     }
@@ -780,8 +805,8 @@ impl CaptureState {
         true
     }
 
-    fn pin_remote_cursor(&self) {
-        if let Some((x, y)) = self.remote_cursor_lock.position() {
+    fn repin_remote_cursor_if_due(&mut self) {
+        if let Some((x, y)) = self.remote_cursor_lock.repin_position_if_due() {
             self.set_cursor_position(x, y);
         }
     }
@@ -797,6 +822,8 @@ impl CaptureState {
         let size = screen_size_i32();
         let (x, y) = self.remote_cursor_lock.begin(edge_x, edge_y, size);
         self.set_cursor_position(x, y);
+        self.remote_cursor_lock.mark_pinned();
+        self.capture_cursor_association();
     }
 
     fn end_remote_cursor_capture(&mut self) {
@@ -808,6 +835,13 @@ impl CaptureState {
         self.remote_cursor_lock.end();
         self.set_cursor_position(x, y);
         self.restore_cursor_association();
+    }
+
+    fn capture_cursor_association(&self) {
+        let status = unsafe { deskbridge_macos_capture_cursor_association() };
+        if status != 0 {
+            eprintln!("failed to capture macOS cursor association (native status {status})");
+        }
     }
 
     fn restore_cursor_association(&self) {
@@ -893,6 +927,13 @@ fn screen_size_i32() -> (i32, i32) {
 
 fn clamp_i16(value: i32) -> i16 {
     value.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
+
+fn mac_scroll_axis_to_remote(value: i64) -> i16 {
+    let inverted = value
+        .saturating_neg()
+        .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    clamp_i16(inverted)
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist/macos"
 VERSION="${DESKBRIDGE_VERSION:-$(awk -F '"' '/^version = / { print $2; exit }' "$ROOT/Cargo.toml")}"
+RELEASE_DIST="$ROOT/dist/releases/$VERSION/macos"
 
 cd "$ROOT"
 cargo build --release
@@ -86,5 +87,15 @@ fi
 
 ditto -c -k --keepParent "$APP" "$DIST/Deskbridge-macOS-app.zip"
 
+if [ -d "$RELEASE_DIST" ]; then
+  chmod -R u+w "$RELEASE_DIST" || true
+  rm -rf "$RELEASE_DIST"
+fi
+mkdir -p "$RELEASE_DIST"
+find "$DIST" -maxdepth 1 -type f -exec cp {} "$RELEASE_DIST" \;
+
 echo "Created:"
 find "$DIST" -maxdepth 1 -type f -print
+
+echo "Archived release files:"
+find "$RELEASE_DIST" -maxdepth 1 -type f -print
