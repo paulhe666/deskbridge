@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Activity,
   CircleStop,
@@ -26,16 +27,9 @@ function App() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  async function request(path, options = {}) {
+  async function command(name, args = {}) {
     setError('');
-    const response = await fetch(path, {
-      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-      ...options,
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload.error || `Request failed: ${response.status}`);
-    }
+    const payload = await invoke(name, args);
     setState(payload);
     setConfig(payload.config);
     return payload;
@@ -43,9 +37,9 @@ function App() {
 
   async function refresh() {
     try {
-      await request('/api/state');
+      await command('get_state');
     } catch (err) {
-      setError(err.message);
+      setError(String(err));
     }
   }
 
@@ -53,23 +47,20 @@ function App() {
     if (!nextConfig) return;
     setBusy(true);
     try {
-      await request('/api/config', {
-        method: 'POST',
-        body: JSON.stringify(nextConfig),
-      });
+      await command('save_config', { config: nextConfig });
     } catch (err) {
-      setError(err.message);
+      setError(String(err));
     } finally {
       setBusy(false);
     }
   }
 
-  async function action(path) {
+  async function action(name) {
     setBusy(true);
     try {
-      await request(path, { method: 'POST', body: '{}' });
+      await command(name);
     } catch (err) {
-      setError(err.message);
+      setError(String(err));
     } finally {
       setBusy(false);
     }
@@ -102,7 +93,7 @@ function App() {
           <div className="app-mark">D</div>
           <div>
             <h1>Deskbridge</h1>
-            <p>React frontend · Rust backend · local Web UI</p>
+            <p>React frontend · Rust backend · Tauri command API</p>
           </div>
         </div>
         <div className={`status-pill ${running ? 'online' : 'offline'}`}>
@@ -173,10 +164,10 @@ function App() {
             <code>{commandPreview}</code>
           </div>
           <div className="button-row">
-            <button className="primary" disabled={busy || running} onClick={() => action('/api/start')}>
+            <button className="primary" disabled={busy || running} onClick={() => action('start_service')}>
               <Play size={16} /> Start
             </button>
-            <button disabled={busy || !running} onClick={() => action('/api/stop')}>
+            <button disabled={busy || !running} onClick={() => action('stop_service')}>
               <CircleStop size={16} /> Stop
             </button>
             <button disabled={busy} onClick={() => save()}>
@@ -214,7 +205,7 @@ function App() {
         </Panel>
 
         <Panel className="logs-panel" title="Logs" icon={<TerminalSquare size={18} />} action={
-          <button className="ghost" onClick={() => action('/api/logs/clear')}>Clear</button>
+          <button className="ghost" onClick={() => action('clear_logs')}>Clear</button>
         }>
           <div className="logs-box">
             {logs.length ? logs.map((line, index) => <div key={`${index}-${line}`}>{line}</div>) : <span className="muted">No logs yet.</span>}

@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    tauri_build::build();
+
     println!("cargo:rerun-if-changed=assets/deskbridge.ico");
     println!("cargo:rerun-if-changed=assets/deskbridge-status.png");
     println!("cargo:rerun-if-changed=packaging/windows/deskbridge.rc");
