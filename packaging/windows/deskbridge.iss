@@ -1,5 +1,5 @@
 #define MyAppName "Deskbridge"
-#define MyAppVersion "1.5.2"
+#define MyAppVersion "1.5.3"
 #define MyAppPublisher "Deskbridge"
 #define MyAppExeName "deskbridge.exe"
 
