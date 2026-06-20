@@ -700,8 +700,7 @@ impl CaptureState {
                 }
                 MotionAction::ReturnLocal { x, y } => {
                     self.finish_remote_session();
-                    self.end_remote_cursor_capture();
-                    self.set_cursor_position(x, y);
+                    self.restore_local_cursor_at(x, y);
                     eprintln!("released control back to macOS");
                 }
                 MotionAction::Local | MotionAction::EnterRemote { .. } => {}
@@ -802,6 +801,16 @@ impl CaptureState {
 
     fn end_remote_cursor_capture(&mut self) {
         self.remote_cursor_lock.end();
+        self.restore_cursor_association();
+    }
+
+    fn restore_local_cursor_at(&mut self, x: i32, y: i32) {
+        self.remote_cursor_lock.end();
+        self.set_cursor_position(x, y);
+        self.restore_cursor_association();
+    }
+
+    fn restore_cursor_association(&self) {
         let status = unsafe { deskbridge_macos_restore_cursor_association() };
         if status != 0 {
             eprintln!("failed to restore macOS cursor association (native status {status})");
@@ -838,9 +847,10 @@ impl CaptureState {
             self.release_remote_buttons();
         }
         let local_position = self.pointer.force_local();
-        self.end_remote_cursor_capture();
         if let Some((x, y)) = local_position {
-            self.set_cursor_position(x, y);
+            self.restore_local_cursor_at(x, y);
+        } else {
+            self.end_remote_cursor_capture();
         }
     }
 
