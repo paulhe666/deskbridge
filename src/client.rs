@@ -1,6 +1,6 @@
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,8 +12,7 @@ use crate::protocol::{self, ClipboardPayload, Frame, FrameKind, InputEvent};
 use crate::transport::SharedWriter;
 
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
-const DEFAULT_INPUT_FLUSH_MS: u64 = 2;
-const INPUT_BATCH_LIMIT: usize = 64;
+const DEFAULT_INPUT_FLUSH_MS: u64 = 4;
 
 pub fn run(server: &str) -> std::io::Result<()> {
     eprintln!("connecting to {server}");
@@ -100,21 +99,70 @@ pub fn run(server: &str) -> std::io::Result<()> {
 
 struct InputApplier {
     sender: Option<Sender<InputEvent>>,
+    pending_motion: Arc<Mutex<PendingInput>>,
     worker: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct PendingInput {
+    delta: (i32, i32),
+    wheel: (i32, i32),
+}
+
+impl PendingInput {
+    fn queue(&mut self, event: InputEvent) {
+        match event {
+            InputEvent::MouseDelta { dx, dy } => {
+                self.delta.0 = self.delta.0.saturating_add(dx);
+                self.delta.1 = self.delta.1.saturating_add(dy);
+            }
+            InputEvent::MouseWheel {
+                horizontal,
+                vertical,
+            } => {
+                self.wheel.0 = self.wheel.0.saturating_add(horizontal as i32);
+                self.wheel.1 = self.wheel.1.saturating_add(vertical as i32);
+            }
+            _ => {}
+        }
+    }
+
+    fn take_events(&mut self) -> Vec<InputEvent> {
+        let mut events = Vec::with_capacity(2);
+        if self.delta.0 != 0 || self.delta.1 != 0 {
+            events.push(InputEvent::MouseDelta {
+                dx: self.delta.0,
+                dy: self.delta.1,
+            });
+            self.delta = (0, 0);
+        }
+        if self.wheel.0 != 0 || self.wheel.1 != 0 {
+            events.push(InputEvent::MouseWheel {
+                horizontal: clamp_i16(self.wheel.0),
+                vertical: clamp_i16(self.wheel.1),
+            });
+            self.wheel = (0, 0);
+        }
+        events
+    }
 }
 
 impl InputApplier {
     fn spawn() -> std::io::Result<(Self, (u32, u32))> {
         let (sender, receiver) = mpsc::channel();
+        let pending_motion = Arc::new(Mutex::new(PendingInput::default()));
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-        let worker = thread::spawn(move || match InputSink::new() {
-            Ok(mut input) => {
-                let screen_size = input.screen_size();
-                let _ = ready_sender.send(Ok(screen_size));
-                input_worker_loop(&mut input, receiver);
-            }
-            Err(e) => {
-                let _ = ready_sender.send(Err(e.to_string()));
+        let worker = thread::spawn({
+            let pending_motion = Arc::clone(&pending_motion);
+            move || match InputSink::new() {
+                Ok(mut input) => {
+                    let screen_size = input.screen_size();
+                    let _ = ready_sender.send(Ok(screen_size));
+                    input_worker_loop(&mut input, receiver, pending_motion);
+                }
+                Err(e) => {
+                    let _ = ready_sender.send(Err(e.to_string()));
+                }
             }
         });
         let screen_size = match ready_receiver.recv() {
@@ -125,6 +173,7 @@ impl InputApplier {
         Ok((
             Self {
                 sender: Some(sender),
+                pending_motion,
                 worker: Some(worker),
             },
             screen_size,
@@ -132,11 +181,18 @@ impl InputApplier {
     }
 
     fn send(&self, event: InputEvent) {
-        let Some(sender) = self.sender.as_ref() else {
-            return;
-        };
-        if let Err(e) = sender.send(event) {
-            eprintln!("input apply queue closed: {e}");
+        match event {
+            event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. }) => {
+                self.pending_motion.lock().unwrap().queue(event);
+            }
+            event => {
+                let Some(sender) = self.sender.as_ref() else {
+                    return;
+                };
+                if let Err(e) = sender.send(event) {
+                    eprintln!("input apply queue closed: {e}");
+                }
+            }
         }
     }
 }
@@ -150,135 +206,35 @@ impl Drop for InputApplier {
     }
 }
 
-fn input_worker_loop(input: &mut InputSink, receiver: Receiver<InputEvent>) {
-    let mut pending_delta = (0i32, 0i32);
-    let mut pending_wheel = (0i32, 0i32);
-    let mut pending_since = None;
-
-    loop {
-        let event = match recv_input_event(&receiver, pending_since) {
-            Ok(Some(event)) => event,
-            Ok(None) => {
-                flush_pending_input(
-                    input,
-                    &mut pending_delta,
-                    &mut pending_wheel,
-                    &mut pending_since,
-                );
-                continue;
-            }
-            Err(()) => break,
-        };
-
-        match event {
-            event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. }) => {
-                queue_pending_input(
-                    event,
-                    &mut pending_delta,
-                    &mut pending_wheel,
-                    &mut pending_since,
-                );
-                drain_queued_input(
-                    input,
-                    &receiver,
-                    &mut pending_delta,
-                    &mut pending_wheel,
-                    &mut pending_since,
-                );
-            }
-            event => {
-                flush_pending_input(
-                    input,
-                    &mut pending_delta,
-                    &mut pending_wheel,
-                    &mut pending_since,
-                );
-                apply_input_event(input, event);
-            }
-        }
-    }
-}
-
-fn recv_input_event(
-    receiver: &Receiver<InputEvent>,
-    pending_since: Option<Instant>,
-) -> Result<Option<InputEvent>, ()> {
-    match pending_since {
-        Some(_) => match receiver.recv_timeout(input_flush_timeout(pending_since)) {
-            Ok(event) => Ok(Some(event)),
-            Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Err(()),
-        },
-        None => receiver.recv().map(Some).map_err(|_| ()),
-    }
-}
-
-fn queue_pending_input(
-    event: InputEvent,
-    pending_delta: &mut (i32, i32),
-    pending_wheel: &mut (i32, i32),
-    pending_since: &mut Option<Instant>,
-) {
-    if pending_since.is_none() {
-        *pending_since = Some(Instant::now());
-    }
-    match event {
-        InputEvent::MouseDelta { dx, dy } => {
-            pending_delta.0 = pending_delta.0.saturating_add(dx);
-            pending_delta.1 = pending_delta.1.saturating_add(dy);
-        }
-        InputEvent::MouseWheel {
-            horizontal,
-            vertical,
-        } => {
-            pending_wheel.0 = pending_wheel.0.saturating_add(horizontal as i32);
-            pending_wheel.1 = pending_wheel.1.saturating_add(vertical as i32);
-        }
-        _ => {}
-    }
-}
-
-fn drain_queued_input(
+fn input_worker_loop(
     input: &mut InputSink,
-    receiver: &Receiver<InputEvent>,
-    pending_delta: &mut (i32, i32),
-    pending_wheel: &mut (i32, i32),
-    pending_since: &mut Option<Instant>,
+    receiver: Receiver<InputEvent>,
+    pending_motion: Arc<Mutex<PendingInput>>,
 ) {
-    for _ in 0..INPUT_BATCH_LIMIT {
-        match receiver.try_recv() {
-            Ok(event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. })) => {
-                queue_pending_input(event, pending_delta, pending_wheel, pending_since);
+    loop {
+        match receiver.recv_timeout(input_flush_interval()) {
+            Ok(event) => apply_ordered_input_event(input, event, &pending_motion),
+            Err(RecvTimeoutError::Timeout) => flush_pending_input(input, &pending_motion),
+            Err(RecvTimeoutError::Disconnected) => {
+                flush_pending_input(input, &pending_motion);
+                break;
             }
-            Ok(event) => {
-                flush_pending_input(input, pending_delta, pending_wheel, pending_since);
-                apply_input_event(input, event);
-                return;
-            }
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => return,
         }
     }
+}
 
-    if pending_ready(*pending_since) {
-        flush_pending_input(input, pending_delta, pending_wheel, pending_since);
+fn apply_ordered_input_event(
+    input: &mut InputSink,
+    event: InputEvent,
+    pending_motion: &Arc<Mutex<PendingInput>>,
+) {
+    if matches!(event, InputEvent::MouseEnter { .. }) {
+        apply_input_event(input, event);
+        flush_pending_input(input, pending_motion);
+    } else {
+        flush_pending_input(input, pending_motion);
+        apply_input_event(input, event);
     }
-}
-
-fn input_flush_timeout(pending_since: Option<Instant>) -> Duration {
-    pending_since
-        .map(|since| {
-            input_flush_interval()
-                .checked_sub(since.elapsed())
-                .unwrap_or(Duration::ZERO)
-        })
-        .unwrap_or_else(input_flush_interval)
-}
-
-fn pending_ready(pending_since: Option<Instant>) -> bool {
-    pending_since
-        .map(|since| since.elapsed() >= input_flush_interval())
-        .unwrap_or(false)
 }
 
 fn input_flush_interval() -> Duration {
@@ -293,33 +249,11 @@ fn input_flush_interval() -> Duration {
     })
 }
 
-fn flush_pending_input(
-    input: &mut InputSink,
-    pending_delta: &mut (i32, i32),
-    pending_wheel: &mut (i32, i32),
-    pending_since: &mut Option<Instant>,
-) {
-    if pending_delta.0 != 0 || pending_delta.1 != 0 {
-        apply_input_event(
-            input,
-            InputEvent::MouseDelta {
-                dx: pending_delta.0,
-                dy: pending_delta.1,
-            },
-        );
-        *pending_delta = (0, 0);
+fn flush_pending_input(input: &mut InputSink, pending_motion: &Arc<Mutex<PendingInput>>) {
+    let events = pending_motion.lock().unwrap().take_events();
+    for event in events {
+        apply_input_event(input, event);
     }
-    if pending_wheel.0 != 0 || pending_wheel.1 != 0 {
-        apply_input_event(
-            input,
-            InputEvent::MouseWheel {
-                horizontal: clamp_i16(pending_wheel.0),
-                vertical: clamp_i16(pending_wheel.1),
-            },
-        );
-        *pending_wheel = (0, 0);
-    }
-    *pending_since = None;
 }
 
 fn apply_input_event(input: &mut InputSink, event: InputEvent) {

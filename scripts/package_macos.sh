@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export COPYFILE_DISABLE=1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist/macos"
@@ -69,12 +70,40 @@ UNINSTALL
 chmod +x "$DIST/Uninstall Deskbridge.command"
 
 if command -v pkgbuild >/dev/null 2>&1; then
+  PKGBUILD_WORK="$DIST/pkgbuild-work"
+  PKG_ROOT="$PKGBUILD_WORK/root"
+  COMPONENT_PLIST="$PKGBUILD_WORK/Deskbridge-component.plist"
+  rm -rf "$PKGBUILD_WORK"
+  mkdir -p "$PKG_ROOT/Applications"
+  ditto "$APP" "$PKG_ROOT/Applications/Deskbridge.app"
+  cat > "$COMPONENT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+  <dict>
+    <key>BundleHasStrictIdentifier</key>
+    <true/>
+    <key>BundleIsRelocatable</key>
+    <false/>
+    <key>BundleIsVersionChecked</key>
+    <true/>
+    <key>BundleOverwriteAction</key>
+    <string>upgrade</string>
+    <key>RootRelativeBundlePath</key>
+    <string>Applications/Deskbridge.app</string>
+  </dict>
+</array>
+</plist>
+PLIST
   pkgbuild \
-    --component "$APP" \
-    --install-location /Applications \
+    --root "$PKG_ROOT" \
+    --component-plist "$COMPONENT_PLIST" \
+    --install-location / \
     --identifier local.deskbridge.app \
     --version "$VERSION" \
     "$DIST/Deskbridge-$VERSION.pkg"
+  rm -rf "$PKGBUILD_WORK"
 
   if [ -n "${MACOS_INSTALLER_IDENTITY:-}" ]; then
     productsign \

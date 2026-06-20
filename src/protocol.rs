@@ -100,10 +100,14 @@ pub fn read_frame(reader: &mut impl Read) -> std::io::Result<Frame> {
 }
 
 pub fn write_frame(writer: &mut impl Write, frame: &Frame) -> std::io::Result<()> {
+    write_frame_unflushed(writer, frame)?;
+    writer.flush()
+}
+
+pub fn write_frame_unflushed(writer: &mut impl Write, frame: &Frame) -> std::io::Result<()> {
     writer.write_all(&[frame.kind as u8])?;
     writer.write_all(&(frame.payload.len() as u64).to_be_bytes())?;
-    writer.write_all(&frame.payload)?;
-    writer.flush()
+    writer.write_all(&frame.payload)
 }
 
 pub fn hello_payload() -> Vec<u8> {

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,7 +18,6 @@ const DEFAULT_REMOTE_WIDTH: i32 = 1366;
 const DEFAULT_REMOTE_HEIGHT: i32 = 768;
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
 const DEFAULT_INPUT_FLUSH_MS: u64 = 4;
-const INPUT_BATCH_LIMIT: usize = 64;
 const REMOTE_CURSOR_REPIN_INTERVAL: Duration = Duration::from_millis(16);
 const TAP_MOUSE_MOVED: u32 = 1;
 const TAP_MOUSE_LEFT_DOWN: u32 = 2;
@@ -356,156 +355,115 @@ fn clipboard_summary(payload: &ClipboardPayload) -> String {
 #[derive(Clone)]
 struct InputEmitter {
     sender: Sender<InputEvent>,
+    pending_motion: Arc<Mutex<PendingInput>>,
+}
+
+#[derive(Default)]
+struct PendingInput {
+    delta: (i32, i32),
+    wheel: (i32, i32),
+}
+
+impl PendingInput {
+    fn queue(&mut self, event: InputEvent) {
+        match event {
+            InputEvent::MouseDelta { dx, dy } => {
+                self.delta.0 = self.delta.0.saturating_add(dx);
+                self.delta.1 = self.delta.1.saturating_add(dy);
+            }
+            InputEvent::MouseWheel {
+                horizontal,
+                vertical,
+            } => {
+                self.wheel.0 = self.wheel.0.saturating_add(horizontal as i32);
+                self.wheel.1 = self.wheel.1.saturating_add(vertical as i32);
+            }
+            _ => {}
+        }
+    }
+
+    fn take_events(&mut self) -> Vec<InputEvent> {
+        let mut events = Vec::with_capacity(2);
+        if self.delta.0 != 0 || self.delta.1 != 0 {
+            events.push(InputEvent::MouseDelta {
+                dx: self.delta.0,
+                dy: self.delta.1,
+            });
+            self.delta = (0, 0);
+        }
+        if self.wheel.0 != 0 || self.wheel.1 != 0 {
+            events.push(InputEvent::MouseWheel {
+                horizontal: clamp_i16(self.wheel.0),
+                vertical: clamp_i16(self.wheel.1),
+            });
+            self.wheel = (0, 0);
+        }
+        events
+    }
 }
 
 impl InputEmitter {
     fn spawn(writer: SharedWriter) -> Self {
         let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || input_writer_loop(writer, receiver));
-        Self { sender }
+        let pending_motion = Arc::new(Mutex::new(PendingInput::default()));
+        thread::spawn({
+            let pending_motion = Arc::clone(&pending_motion);
+            move || input_writer_loop(writer, receiver, pending_motion)
+        });
+        Self {
+            sender,
+            pending_motion,
+        }
     }
 
     fn send(&self, event: InputEvent) {
-        if let Err(e) = self.sender.send(event) {
-            eprintln!("input queue closed: {e}");
+        match event {
+            event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. }) => {
+                self.pending_motion.lock().unwrap().queue(event);
+            }
+            event => {
+                if let Err(e) = self.sender.send(event) {
+                    eprintln!("input queue closed: {e}");
+                }
+            }
         }
     }
 }
 
-fn input_writer_loop(writer: SharedWriter, receiver: Receiver<InputEvent>) {
-    let mut pending_delta = (0i32, 0i32);
-    let mut pending_wheel = (0i32, 0i32);
-    let mut pending_since = None;
+fn input_writer_loop(
+    writer: SharedWriter,
+    receiver: Receiver<InputEvent>,
+    pending_motion: Arc<Mutex<PendingInput>>,
+) {
     let mut log = InputSendLog::new();
 
     loop {
-        let event = match recv_input_event(&receiver, pending_since) {
-            Ok(Some(event)) => event,
-            Ok(None) => {
-                flush_pending_input(
-                    &writer,
-                    &mut pending_delta,
-                    &mut pending_wheel,
-                    &mut pending_since,
-                    &mut log,
-                );
-                continue;
+        match receiver.recv_timeout(input_flush_interval()) {
+            Ok(event) => write_ordered_input_event(&writer, event, &pending_motion, &mut log),
+            Err(RecvTimeoutError::Timeout) => {
+                flush_pending_input(&writer, &pending_motion, &mut log);
             }
-            Err(()) => break,
-        };
-
-        match event {
-            event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. }) => {
-                queue_pending_input(
-                    event,
-                    &mut pending_delta,
-                    &mut pending_wheel,
-                    &mut pending_since,
-                );
-                drain_queued_input(
-                    &writer,
-                    &receiver,
-                    &mut pending_delta,
-                    &mut pending_wheel,
-                    &mut pending_since,
-                    &mut log,
-                );
-            }
-            event => {
-                flush_pending_input(
-                    &writer,
-                    &mut pending_delta,
-                    &mut pending_wheel,
-                    &mut pending_since,
-                    &mut log,
-                );
-                write_input_event(&writer, event, &mut log);
+            Err(RecvTimeoutError::Disconnected) => {
+                flush_pending_input(&writer, &pending_motion, &mut log);
+                break;
             }
         }
     }
 }
 
-fn recv_input_event(
-    receiver: &Receiver<InputEvent>,
-    pending_since: Option<Instant>,
-) -> Result<Option<InputEvent>, ()> {
-    match pending_since {
-        Some(_) => match receiver.recv_timeout(input_flush_timeout(pending_since)) {
-            Ok(event) => Ok(Some(event)),
-            Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Err(()),
-        },
-        None => receiver.recv().map(Some).map_err(|_| ()),
-    }
-}
-
-fn queue_pending_input(
-    event: InputEvent,
-    pending_delta: &mut (i32, i32),
-    pending_wheel: &mut (i32, i32),
-    pending_since: &mut Option<Instant>,
-) {
-    if pending_since.is_none() {
-        *pending_since = Some(Instant::now());
-    }
-    match event {
-        InputEvent::MouseDelta { dx, dy } => {
-            pending_delta.0 = pending_delta.0.saturating_add(dx);
-            pending_delta.1 = pending_delta.1.saturating_add(dy);
-        }
-        InputEvent::MouseWheel {
-            horizontal,
-            vertical,
-        } => {
-            pending_wheel.0 = pending_wheel.0.saturating_add(horizontal as i32);
-            pending_wheel.1 = pending_wheel.1.saturating_add(vertical as i32);
-        }
-        _ => {}
-    }
-}
-
-fn drain_queued_input(
+fn write_ordered_input_event(
     writer: &SharedWriter,
-    receiver: &Receiver<InputEvent>,
-    pending_delta: &mut (i32, i32),
-    pending_wheel: &mut (i32, i32),
-    pending_since: &mut Option<Instant>,
+    event: InputEvent,
+    pending_motion: &Arc<Mutex<PendingInput>>,
     log: &mut InputSendLog,
 ) {
-    for _ in 0..INPUT_BATCH_LIMIT {
-        match receiver.try_recv() {
-            Ok(event @ (InputEvent::MouseDelta { .. } | InputEvent::MouseWheel { .. })) => {
-                queue_pending_input(event, pending_delta, pending_wheel, pending_since);
-            }
-            Ok(event) => {
-                flush_pending_input(writer, pending_delta, pending_wheel, pending_since, log);
-                write_input_event(writer, event, log);
-                return;
-            }
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => return,
-        }
+    if matches!(event, InputEvent::MouseEnter { .. }) {
+        write_input_event(writer, event, log);
+        flush_pending_input(writer, pending_motion, log);
+    } else {
+        flush_pending_input(writer, pending_motion, log);
+        write_input_event(writer, event, log);
     }
-
-    if pending_ready(*pending_since) {
-        flush_pending_input(writer, pending_delta, pending_wheel, pending_since, log);
-    }
-}
-
-fn input_flush_timeout(pending_since: Option<Instant>) -> Duration {
-    pending_since
-        .map(|since| {
-            input_flush_interval()
-                .checked_sub(since.elapsed())
-                .unwrap_or(Duration::ZERO)
-        })
-        .unwrap_or_else(input_flush_interval)
-}
-
-fn pending_ready(pending_since: Option<Instant>) -> bool {
-    pending_since
-        .map(|since| since.elapsed() >= input_flush_interval())
-        .unwrap_or(false)
 }
 
 fn input_flush_interval() -> Duration {
@@ -522,34 +480,13 @@ fn input_flush_interval() -> Duration {
 
 fn flush_pending_input(
     writer: &SharedWriter,
-    pending_delta: &mut (i32, i32),
-    pending_wheel: &mut (i32, i32),
-    pending_since: &mut Option<Instant>,
+    pending_motion: &Arc<Mutex<PendingInput>>,
     log: &mut InputSendLog,
 ) {
-    if pending_delta.0 != 0 || pending_delta.1 != 0 {
-        write_input_event(
-            writer,
-            InputEvent::MouseDelta {
-                dx: pending_delta.0,
-                dy: pending_delta.1,
-            },
-            log,
-        );
-        *pending_delta = (0, 0);
+    let events = pending_motion.lock().unwrap().take_events();
+    for event in events {
+        write_input_event(writer, event, log);
     }
-    if pending_wheel.0 != 0 || pending_wheel.1 != 0 {
-        write_input_event(
-            writer,
-            InputEvent::MouseWheel {
-                horizontal: clamp_i16(pending_wheel.0),
-                vertical: clamp_i16(pending_wheel.1),
-            },
-            log,
-        );
-        *pending_wheel = (0, 0);
-    }
-    *pending_since = None;
 }
 
 struct InputSendLog {
@@ -579,7 +516,7 @@ impl InputSendLog {
 
 fn write_input_event(writer: &SharedWriter, event: InputEvent, log: &mut InputSendLog) {
     let encoded = protocol::encode_input(&event);
-    if let Err(e) = writer.write(Frame::new(FrameKind::Input, encoded)) {
+    if let Err(e) = writer.write_input(Frame::new(FrameKind::Input, encoded)) {
         eprintln!("input send failed after {} sent event(s): {e}", log.count);
         return;
     }

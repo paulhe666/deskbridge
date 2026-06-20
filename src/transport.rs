@@ -36,6 +36,11 @@ impl SharedWriter {
         let _permit = self.inner.acquire(input_priority);
         protocol::write_frame(&mut *self.inner.stream.lock().unwrap(), &frame)
     }
+
+    pub fn write_input(&self, frame: Frame) -> std::io::Result<()> {
+        let _permit = self.inner.acquire(true);
+        protocol::write_frame_unflushed(&mut *self.inner.stream.lock().unwrap(), &frame)
+    }
 }
 
 impl WriterInner {
