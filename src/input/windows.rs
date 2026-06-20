@@ -13,6 +13,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, SetCursorPos, SetProcessDPIAware,
 };
 
+use crate::platform::ConnectionProfile;
 use crate::protocol::{InputEvent, KeyState, MouseButton};
 
 const XBUTTON1_DATA: u32 = 1;
@@ -27,7 +28,8 @@ pub struct InputSink {
 }
 
 impl InputSink {
-    pub fn new() -> std::io::Result<Self> {
+    pub fn new(profile: ConnectionProfile) -> std::io::Result<Self> {
+        eprintln!("Windows input profile: {}", profile.as_str());
         unsafe {
             SetProcessDPIAware();
         }

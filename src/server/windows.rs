@@ -35,6 +35,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use super::{Edge, ServerConfig};
 use crate::clipboard::{Clipboard, ClipboardApi};
 use crate::file_transfer;
+use crate::platform::{ConnectionProfile, Platform};
 use crate::pointer::{MotionAction, PointerRouter};
 use crate::protocol::{
     self, ClipboardPayload, Frame, FrameKind, InputEvent, KeyState, MouseButton,
@@ -62,7 +63,7 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
 
     let listener = TcpListener::bind(&config.bind)?;
     eprintln!("deskbridge server listening on {}", config.bind);
-    let (stream, addr, writer, remote_size) = loop {
+    let (stream, addr, writer, remote_size, client_platform) = loop {
         let (mut stream, addr) = listener.accept()?;
         stream.set_nodelay(true)?;
         eprintln!("client connected from {addr}");
@@ -74,7 +75,9 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
         }
 
         match read_client_hello(&mut stream) {
-            Ok(remote_size) => break (stream, addr, writer, remote_size),
+            Ok((remote_size, client_platform)) => {
+                break (stream, addr, writer, remote_size, client_platform);
+            }
             Err(e) => {
                 eprintln!(
                     "client {addr} disconnected during handshake: {e}; waiting for another client"
@@ -83,6 +86,13 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
             }
         }
     };
+    let remote_profile = ConnectionProfile::local_server(client_platform);
+    eprintln!(
+        "connection profile: {} -> {} ({})",
+        Platform::local().as_str(),
+        client_platform.as_str(),
+        remote_profile.as_str()
+    );
     let _ = TRANSFER_WRITER.set(writer.clone());
     eprintln!(
         "remote screen {}x{}, edge {:?}, client {}",
@@ -137,16 +147,19 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
     Ok(())
 }
 
-fn read_client_hello(stream: &mut TcpStream) -> std::io::Result<(i32, i32)> {
+fn read_client_hello(stream: &mut TcpStream) -> std::io::Result<((i32, i32), Platform)> {
     let frame = protocol::read_frame(stream)?;
     if frame.kind != FrameKind::Hello {
-        return Ok((DEFAULT_REMOTE_WIDTH, DEFAULT_REMOTE_HEIGHT));
+        return Ok((
+            (DEFAULT_REMOTE_WIDTH, DEFAULT_REMOTE_HEIGHT),
+            Platform::Unknown,
+        ));
     }
     let hello = protocol::decode_hello(&frame.payload)?;
     protocol::validate_version(hello)?;
     let width = hello.screen_width.unwrap_or(DEFAULT_REMOTE_WIDTH as u32) as i32;
     let height = hello.screen_height.unwrap_or(DEFAULT_REMOTE_HEIGHT as u32) as i32;
-    Ok((width.max(1), height.max(1)))
+    Ok(((width.max(1), height.max(1)), hello.platform))
 }
 
 fn spawn_inbound_reader(mut stream: TcpStream, clipboard_state: Arc<Mutex<ClipboardSyncState>>) {

@@ -13,6 +13,7 @@ use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::string::{CFString, CFStringRef};
 
+use crate::platform::ConnectionProfile;
 use crate::protocol::{InputEvent, KeyState, MouseButton};
 
 #[repr(C)]
@@ -265,10 +266,14 @@ pub struct InputSink {
     backspace_down_since: Option<Instant>,
     remote_active: bool,
     cursor_hidden: bool,
+    profile: ConnectionProfile,
+    windows_source_compat: bool,
 }
 
 impl InputSink {
-    pub fn new() -> std::io::Result<Self> {
+    pub fn new(profile: ConnectionProfile) -> std::io::Result<Self> {
+        eprintln!("macOS input profile: {}", profile.as_str());
+        let windows_source_compat = matches!(profile, ConnectionProfile::WindowsToMacOS);
         let native = NativeInput::new()?;
         if native.hid_ready {
             eprintln!(
@@ -305,6 +310,8 @@ impl InputSink {
             backspace_down_since: None,
             remote_active: false,
             cursor_hidden,
+            profile,
+            windows_source_compat,
         })
     }
 
@@ -328,27 +335,27 @@ impl InputSink {
     }
 
     fn key(&mut self, scancode: u16, state: KeyState) -> std::io::Result<()> {
-        if scancode == PRINT_SCREEN_SCANCODE {
+        if self.windows_source_compat && scancode == PRINT_SCREEN_SCANCODE {
             if state == KeyState::Down {
                 self.screenshot_hotkey()?;
             }
             return Ok(());
         }
-        if scancode == CAPS_LOCK_SCANCODE {
+        if self.windows_source_compat && scancode == CAPS_LOCK_SCANCODE {
             if state == KeyState::Down {
                 self.toggle_caps_lock()?;
             }
             return Ok(());
         }
 
-        if self.handle_shift_tap(scancode, state)? {
+        if self.windows_source_compat && self.handle_shift_tap(scancode, state)? {
             return Ok(());
         }
         if matches!(state, KeyState::Down | KeyState::Repeat) {
             self.flush_pending_shift_modifier()?;
         }
 
-        let Some(keycode) = scancode_to_macos_key(scancode) else {
+        let Some(keycode) = scancode_to_macos_key_for_profile(scancode, self.profile) else {
             return Ok(());
         };
         match state {
@@ -431,7 +438,7 @@ impl InputSink {
         let Some(scancode) = self.shift_tap_candidate.take() else {
             return Ok(());
         };
-        if let Some(keycode) = scancode_to_macos_key(scancode) {
+        if let Some(keycode) = scancode_to_macos_key_for_profile(scancode, self.profile) {
             if self.pressed_keys.insert(keycode) {
                 self.post_key(keycode, true)?;
             }
@@ -988,7 +995,7 @@ fn is_letter_keycode(keycode: u16) -> bool {
     )
 }
 
-fn scancode_to_macos_key(scancode: u16) -> Option<u16> {
+fn scancode_to_macos_key_for_profile(scancode: u16, profile: ConnectionProfile) -> Option<u16> {
     Some(match scancode {
         1 => 53,
         2 => 18,
@@ -1018,6 +1025,7 @@ fn scancode_to_macos_key(scancode: u16) -> Option<u16> {
         26 => 33,
         27 => 30,
         28 => 36,
+        29 if matches!(profile, ConnectionProfile::MacOSToMacOS) => CONTROL_KEYCODE,
         29 => COMMAND_KEYCODE,
         30 => 0,
         31 => 1,
@@ -1077,6 +1085,7 @@ fn scancode_to_macos_key(scancode: u16) -> Option<u16> {
         87 => 103,
         88 => 111,
         284 => 76,
+        285 if matches!(profile, ConnectionProfile::MacOSToMacOS) => 62,
         285 => RIGHT_COMMAND_KEYCODE,
         309 => 75,
         312 => RIGHT_OPTION_KEYCODE,

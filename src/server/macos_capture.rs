@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::config::ModifierTarget;
+use crate::platform::ConnectionProfile;
 use crate::protocol::{InputEvent, KeyState};
 
 const CAPS_LOCK_SCANCODE: u16 = 58;
@@ -13,14 +14,27 @@ pub struct ModifierMapping {
 }
 
 impl ModifierMapping {
-    pub fn from_env() -> Self {
+    pub fn for_profile(profile: ConnectionProfile) -> Self {
+        let defaults = match profile {
+            ConnectionProfile::MacOSToMacOS => Self {
+                command: ModifierTarget::Meta,
+                control: ModifierTarget::Control,
+                option: ModifierTarget::Alt,
+            },
+            _ => Self {
+                command: ModifierTarget::Control,
+                control: ModifierTarget::Control,
+                option: ModifierTarget::Alt,
+            },
+        };
         let mapping = Self {
-            command: env_modifier_target("DESKBRIDGE_MAC_COMMAND_MAPPING", ModifierTarget::Control),
-            control: env_modifier_target("DESKBRIDGE_MAC_CONTROL_MAPPING", ModifierTarget::Control),
-            option: env_modifier_target("DESKBRIDGE_MAC_OPTION_MAPPING", ModifierTarget::Alt),
+            command: env_modifier_target("DESKBRIDGE_MAC_COMMAND_MAPPING", defaults.command),
+            control: env_modifier_target("DESKBRIDGE_MAC_CONTROL_MAPPING", defaults.control),
+            option: env_modifier_target("DESKBRIDGE_MAC_OPTION_MAPPING", defaults.option),
         };
         eprintln!(
-            "macOS server modifier mapping: Command->{}, Control->{}, Option->{}",
+            "macOS server modifier mapping for {}: Command->{}, Control->{}, Option->{}",
+            profile.as_str(),
             mapping.command.as_str(),
             mapping.control.as_str(),
             mapping.option.as_str()

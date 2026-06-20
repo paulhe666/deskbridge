@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crate::clipboard::{Clipboard, ClipboardApi};
 use crate::file_transfer;
 use crate::input::InputSink;
+use crate::platform::{ConnectionProfile, Platform};
 use crate::protocol::{self, ClipboardPayload, Frame, FrameKind, InputEvent};
 use crate::transport::SharedWriter;
 
@@ -26,14 +27,7 @@ pub fn run(server: &str) -> std::io::Result<()> {
         stop_flag.store(true, Ordering::Release);
         let _ = stop_stream.shutdown(Shutdown::Both);
     });
-    eprintln!("initializing local input sink");
-    let (input, (width, height)) = InputApplier::spawn()?;
-    eprintln!("connected; sending hello with screen {width}x{height}");
-    writer.write(crate::protocol::Frame::new(
-        FrameKind::Hello,
-        protocol::hello_payload_with_screen(width, height),
-    ))?;
-
+    eprintln!("connected; waiting for server hello");
     let server_hello = protocol::read_frame(&mut stream)?;
     if server_hello.kind != FrameKind::Hello {
         return Err(std::io::Error::new(
@@ -43,6 +37,21 @@ pub fn run(server: &str) -> std::io::Result<()> {
     }
     let server_hello = protocol::decode_hello(&server_hello.payload)?;
     protocol::validate_version(server_hello)?;
+    let profile = ConnectionProfile::local_client(server_hello.platform);
+    eprintln!(
+        "connection profile: {} server -> {} client ({})",
+        server_hello.platform.as_str(),
+        Platform::local().as_str(),
+        profile.as_str()
+    );
+
+    eprintln!("initializing local input sink");
+    let (input, (width, height)) = InputApplier::spawn(profile)?;
+    eprintln!("sending client hello with screen {width}x{height}");
+    writer.write(crate::protocol::Frame::new(
+        FrameKind::Hello,
+        protocol::hello_payload_with_screen(width, height),
+    ))?;
 
     eprintln!("initializing local clipboard");
     let mut clipboard = Clipboard::new()?;
@@ -148,13 +157,13 @@ impl PendingInput {
 }
 
 impl InputApplier {
-    fn spawn() -> std::io::Result<(Self, (u32, u32))> {
+    fn spawn(profile: ConnectionProfile) -> std::io::Result<(Self, (u32, u32))> {
         let (sender, receiver) = mpsc::channel();
         let pending_motion = Arc::new(Mutex::new(PendingInput::default()));
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let worker = thread::spawn({
             let pending_motion = Arc::clone(&pending_motion);
-            move || match InputSink::new() {
+            move || match InputSink::new(profile) {
                 Ok(mut input) => {
                     let screen_size = input.screen_size();
                     let _ = ready_sender.send(Ok(screen_size));

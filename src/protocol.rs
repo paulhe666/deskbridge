@@ -1,7 +1,9 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-pub const VERSION: u16 = 2;
+use crate::platform::Platform;
+
+pub const VERSION: u16 = 3;
 pub const CHUNK_SIZE: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +86,7 @@ pub enum InputEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hello {
     pub version: u16,
+    pub platform: Platform,
     pub screen_width: Option<u32>,
     pub screen_height: Option<u32>,
 }
@@ -111,7 +114,9 @@ pub fn write_frame_unflushed(writer: &mut impl Write, frame: &Frame) -> std::io:
 }
 
 pub fn hello_payload() -> Vec<u8> {
-    VERSION.to_be_bytes().to_vec()
+    let mut out = VERSION.to_be_bytes().to_vec();
+    out.push(Platform::local().as_byte());
+    out
 }
 
 pub fn hello_payload_with_screen(width: u32, height: u32) -> Vec<u8> {
@@ -126,7 +131,17 @@ pub fn decode_hello(payload: &[u8]) -> std::io::Result<Hello> {
         return Err(invalid("short hello payload"));
     }
     let version = u16::from_be_bytes([payload[0], payload[1]]);
-    let (screen_width, screen_height) = if payload.len() >= 10 {
+    let platform = payload
+        .get(2)
+        .copied()
+        .map(Platform::from_byte)
+        .unwrap_or(Platform::Unknown);
+    let (screen_width, screen_height) = if payload.len() >= 11 {
+        (
+            Some(u32::from_be_bytes(payload[3..7].try_into().unwrap())),
+            Some(u32::from_be_bytes(payload[7..11].try_into().unwrap())),
+        )
+    } else if payload.len() >= 10 {
         (
             Some(u32::from_be_bytes(payload[2..6].try_into().unwrap())),
             Some(u32::from_be_bytes(payload[6..10].try_into().unwrap())),
@@ -136,6 +151,7 @@ pub fn decode_hello(payload: &[u8]) -> std::io::Result<Hello> {
     };
     Ok(Hello {
         version,
+        platform,
         screen_width,
         screen_height,
     })
@@ -400,6 +416,7 @@ mod tests {
         assert!(
             validate_version(Hello {
                 version: VERSION - 1,
+                platform: Platform::Unknown,
                 screen_width: None,
                 screen_height: None,
             })

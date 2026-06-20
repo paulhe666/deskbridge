@@ -10,6 +10,7 @@ use super::macos_capture::{KeyboardRouter, ModifierMapping};
 use super::{Edge, ServerConfig};
 use crate::clipboard::{Clipboard, ClipboardApi};
 use crate::file_transfer;
+use crate::platform::{ConnectionProfile, Platform};
 use crate::pointer::{MotionAction, PointerRouter};
 use crate::protocol::{self, ClipboardPayload, Frame, FrameKind, InputEvent, MouseButton};
 use crate::transport::SharedWriter;
@@ -47,7 +48,7 @@ unsafe extern "C" {
 pub fn run(config: ServerConfig) -> std::io::Result<()> {
     let listener = TcpListener::bind(&config.bind)?;
     eprintln!("deskbridge macOS server listening on {}", config.bind);
-    let (stream, addr, writer, remote_size) = loop {
+    let (stream, addr, writer, remote_size, client_platform) = loop {
         let (mut stream, addr) = listener.accept()?;
         stream.set_nodelay(true)?;
         eprintln!("client connected from {addr}");
@@ -59,7 +60,9 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
         }
 
         match read_client_hello(&mut stream) {
-            Ok(remote_size) => break (stream, addr, writer, remote_size),
+            Ok((remote_size, client_platform)) => {
+                break (stream, addr, writer, remote_size, client_platform);
+            }
             Err(e) => {
                 eprintln!(
                     "client {addr} disconnected during handshake: {e}; waiting for another client"
@@ -74,11 +77,13 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
     );
 
     let clipboard_state = Arc::new(Mutex::new(ClipboardSyncState::default()));
+    let remote_profile = ConnectionProfile::local_server(client_platform);
     let input = InputEmitter::spawn(writer.clone());
     let state = Arc::new(Mutex::new(CaptureState::new(
         input,
         config.edge,
         remote_size,
+        remote_profile,
     )));
     if CAPTURE_STATE.set(state).is_err() {
         return Err(std::io::Error::new(
@@ -101,7 +106,9 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
     );
     spawn_clipboard_watcher(writer, clipboard_state);
 
-    eprintln!("macOS event tap starting; move through the configured edge to control Windows");
+    eprintln!(
+        "macOS event tap starting; move through the configured edge to control the remote device"
+    );
     let status = unsafe { deskbridge_event_tap_run(std::ptr::null_mut(), event_tap_callback) };
     restore_capture_to_local();
     if let Some(message) = connection_error.lock().unwrap().take() {
@@ -122,16 +129,19 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
     }
 }
 
-fn read_client_hello(stream: &mut TcpStream) -> std::io::Result<(i32, i32)> {
+fn read_client_hello(stream: &mut TcpStream) -> std::io::Result<((i32, i32), Platform)> {
     let frame = protocol::read_frame(stream)?;
     if frame.kind != FrameKind::Hello {
-        return Ok((DEFAULT_REMOTE_WIDTH, DEFAULT_REMOTE_HEIGHT));
+        return Ok((
+            (DEFAULT_REMOTE_WIDTH, DEFAULT_REMOTE_HEIGHT),
+            Platform::Unknown,
+        ));
     }
     let hello = protocol::decode_hello(&frame.payload)?;
     protocol::validate_version(hello)?;
     let width = hello.screen_width.unwrap_or(DEFAULT_REMOTE_WIDTH as u32) as i32;
     let height = hello.screen_height.unwrap_or(DEFAULT_REMOTE_HEIGHT as u32) as i32;
-    Ok((width.max(1), height.max(1)))
+    Ok(((width.max(1), height.max(1)), hello.platform))
 }
 
 fn spawn_inbound_reader(
@@ -570,6 +580,7 @@ struct CaptureState {
     input: InputEmitter,
     pointer: PointerRouter,
     keyboard: KeyboardRouter,
+    profile: ConnectionProfile,
     remote_buttons: HashSet<MouseButton>,
     remote_cursor_lock: RemoteCursorLock,
 }
@@ -622,11 +633,17 @@ impl RemoteCursorLock {
 }
 
 impl CaptureState {
-    fn new(input: InputEmitter, edge: Edge, remote_size: (i32, i32)) -> Self {
+    fn new(
+        input: InputEmitter,
+        edge: Edge,
+        remote_size: (i32, i32),
+        profile: ConnectionProfile,
+    ) -> Self {
         Self {
             input,
             pointer: PointerRouter::new(edge, screen_size_i32(), remote_size),
-            keyboard: KeyboardRouter::new(ModifierMapping::from_env()),
+            keyboard: KeyboardRouter::new(ModifierMapping::for_profile(profile)),
+            profile,
             remote_buttons: HashSet::new(),
             remote_cursor_lock: RemoteCursorLock::default(),
         }
@@ -680,7 +697,7 @@ impl CaptureState {
                 self.send_input(input);
             }
             self.begin_remote_cursor_capture(event.x.round() as i32, event.y.round() as i32);
-            eprintln!("entered Windows control at {x},{y}; push back through the edge to release");
+            eprintln!("entered remote control at {x},{y}; push back through the edge to release");
             return true;
         }
         false
@@ -708,8 +725,8 @@ impl CaptureState {
             return false;
         }
         self.send_input(InputEvent::MouseWheel {
-            horizontal: mac_scroll_axis_to_remote(event.a),
-            vertical: mac_scroll_axis_to_remote(event.b),
+            horizontal: mac_scroll_axis_to_remote(event.a, self.profile),
+            vertical: mac_scroll_axis_to_remote(event.b, self.profile),
         });
         true
     }
@@ -866,11 +883,15 @@ fn clamp_i16(value: i32) -> i16 {
     value.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
-fn mac_scroll_axis_to_remote(value: i64) -> i16 {
-    let inverted = value
-        .saturating_neg()
-        .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-    clamp_i16(inverted)
+fn mac_scroll_axis_to_remote(value: i64, profile: ConnectionProfile) -> i16 {
+    let mapped = if matches!(profile, ConnectionProfile::MacOSToMacOS) {
+        value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+    } else {
+        value
+            .saturating_neg()
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32
+    };
+    clamp_i16(mapped)
 }
 
 #[cfg(test)]
