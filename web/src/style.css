@@ -279,7 +279,7 @@ button:disabled {
   background: rgba(2, 6, 23, 0.38);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 620px) {
   body {
     min-width: 0;
   }
@@ -674,11 +674,17 @@ body {
   flex: 0 0 auto;
 }
 
-.brand-svg {
+.brand-svg,
+.brand-image {
   width: 58px;
   height: 58px;
+  display: block;
   transform: none;
   filter: drop-shadow(0 10px 14px rgba(18, 120, 204, 0.18));
+}
+
+.brand-image {
+  object-fit: contain;
 }
 
 .brand-shadow {
@@ -818,9 +824,9 @@ button,
   font-size: 12px;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 620px) {
   .app-shell {
-    width: min(720px, calc(100% - 24px));
+    width: min(600px, calc(100% - 24px));
   }
 
   .grid-layout,
@@ -869,7 +875,8 @@ button,
 }
 
 .app-mark.image-mark,
-.brand-svg {
+.brand-svg,
+.brand-image {
   width: 52px;
   height: 52px;
 }
@@ -944,7 +951,7 @@ button,
   accent-color: #2563eb;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 620px) {
   .app-shell {
     width: calc(100vw - 22px);
     padding-top: 10px;
