@@ -64,6 +64,8 @@ impl AppConfig {
         let Ok(text) = fs::read_to_string(config_path()) else {
             return config;
         };
+        let mut saved_language_without_user_marker = false;
+        let mut language_user_set = false;
         for line in text.lines() {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
@@ -77,7 +79,11 @@ impl AppConfig {
                     }
                 }
                 "language" => {
+                    saved_language_without_user_marker = true;
                     config.language = Language::parse(value.trim()).unwrap_or(config.language)
+                }
+                "language_source" => {
+                    language_user_set = value.trim() == "user";
                 }
                 "bind" => config.bind = value.trim().to_string(),
                 "server" => config.server = value.trim().to_string(),
@@ -111,6 +117,9 @@ impl AppConfig {
                 _ => {}
             }
         }
+        if saved_language_without_user_marker && !language_user_set {
+            config.language = Language::English;
+        }
         config
     }
 
@@ -122,7 +131,7 @@ impl AppConfig {
         fs::write(
             path,
             format!(
-                "role={}\nlanguage={}\nbind={}\nserver={}\nedge={}\nscroll_scale={:.3}\nscroll_response={:.3}\nscroll_max_step={:.1}\nscroll_frame_ms={}\nmac_command_mapping={}\nmac_control_mapping={}\nmac_option_mapping={}\n",
+                "role={}\nlanguage={}\nlanguage_source=user\nbind={}\nserver={}\nedge={}\nscroll_scale={:.3}\nscroll_response={:.3}\nscroll_max_step={:.1}\nscroll_frame_ms={}\nmac_command_mapping={}\nmac_control_mapping={}\nmac_option_mapping={}\n",
                 match self.role {
                     Role::Server => "server",
                     Role::Client => "client",

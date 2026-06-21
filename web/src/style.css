@@ -11,7 +11,7 @@
 
 body {
   margin: 0;
-  min-width: 960px;
+  min-width: 760px;
   min-height: 100vh;
   background:
     radial-gradient(circle at 18% 8%, rgba(68, 121, 255, 0.24), transparent 28%),
@@ -26,7 +26,7 @@ select {
 }
 
 .app-shell {
-  width: min(1180px, calc(100vw - 48px));
+  width: min(860px, calc(100vw - 32px));
   margin: 0 auto;
   padding: 32px 0 42px;
 }
@@ -319,7 +319,7 @@ body {
 }
 
 .app-shell {
-  width: min(1180px, calc(100% - 44px));
+  width: min(860px, calc(100% - 32px));
   padding: 28px 0 42px;
 }
 
@@ -632,7 +632,7 @@ body {
 }
 
 .app-shell {
-  width: min(880px, calc(100% - 36px));
+  width: min(760px, calc(100% - 28px));
   padding: 18px 0 28px;
 }
 
@@ -672,12 +672,16 @@ body {
   overflow: visible;
 }
 
-.app-mark.image-mark img {
+.brand-svg {
   width: 78px;
   height: 78px;
-  object-fit: contain;
   transform: translate(-8px, -8px);
   filter: drop-shadow(0 13px 20px rgba(18, 120, 204, 0.22));
+}
+
+.brand-shadow {
+  fill: rgba(13, 112, 190, 0.16);
+  transform: translate(0, 3px);
 }
 
 .status-pill {
