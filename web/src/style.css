@@ -632,7 +632,7 @@ body {
 }
 
 .app-shell {
-  width: min(760px, calc(100% - 28px));
+  width: min(980px, calc(100% - 34px));
   padding: 18px 0 28px;
 }
 
@@ -644,39 +644,41 @@ body {
 }
 
 .brand-row {
-  gap: 16px;
+  gap: 14px;
+  min-width: 0;
 }
 
 .brand-row h1 {
-  margin-bottom: 4px;
-  font-size: clamp(32px, 5vw, 46px);
+  margin-bottom: 3px;
+  font-size: clamp(30px, 4vw, 42px);
   line-height: 0.98;
-  letter-spacing: -0.06em;
+  letter-spacing: -0.055em;
 }
 
 .brand-row p {
-  font-size: 17px;
+  font-size: 15px;
   line-height: 1.35;
   color: #6b7b91;
 }
 
 .app-mark.image-mark {
-  width: 62px;
-  height: 62px;
-  border-radius: 20px;
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
   padding: 0;
   color: transparent;
   background: transparent;
   box-shadow: none;
   transform: none;
   overflow: visible;
+  flex: 0 0 auto;
 }
 
 .brand-svg {
-  width: 78px;
-  height: 78px;
-  transform: translate(-8px, -8px);
-  filter: drop-shadow(0 13px 20px rgba(18, 120, 204, 0.22));
+  width: 58px;
+  height: 58px;
+  transform: none;
+  filter: drop-shadow(0 10px 14px rgba(18, 120, 204, 0.18));
 }
 
 .brand-shadow {
@@ -692,12 +694,13 @@ body {
 }
 
 .icon-button {
-  width: 38px;
-  height: 38px;
-  border-radius: 14px;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
 }
 
 .grid-layout {
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
   gap: 14px;
   margin-top: 14px;
 }
@@ -815,7 +818,7 @@ button,
   font-size: 12px;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 760px) {
   .app-shell {
     width: min(720px, calc(100% - 24px));
   }
@@ -824,5 +827,91 @@ button,
   .form-grid,
   .form-grid.compact {
     grid-template-columns: 1fr;
+  }
+}
+
+/* 1.5.7 layout correction: keep the UI close to the window and responsive. */
+.app-shell {
+  width: calc(100vw - 28px);
+  max-width: none;
+  margin: 0 auto;
+  padding: 12px 0 18px;
+}
+
+.hero-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 14px 18px;
+}
+
+.hero-actions {
+  justify-content: flex-end;
+  align-self: start;
+  padding-top: 4px;
+}
+
+.grid-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.logs-panel {
+  grid-column: 1 / -1;
+}
+
+.panel {
+  padding: 15px;
+  border-radius: 20px;
+}
+
+.app-mark.image-mark,
+.brand-svg {
+  width: 52px;
+  height: 52px;
+}
+
+.brand-row {
+  gap: 12px;
+}
+
+.brand-row h1 {
+  font-size: clamp(28px, 3.6vw, 40px);
+}
+
+.brand-row p {
+  font-size: 14px;
+}
+
+.status-pill {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.icon-button {
+  width: 32px;
+  height: 32px;
+  border-radius: 11px;
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    width: calc(100vw - 22px);
+    padding-top: 10px;
+  }
+
+  .hero-card,
+  .grid-layout,
+  .form-grid,
+  .form-grid.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-actions {
+    justify-content: flex-start;
   }
 }
