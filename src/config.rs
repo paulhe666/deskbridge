@@ -206,15 +206,5 @@ fn parse_f64(value: &str, default: f64) -> f64 {
 }
 
 fn default_language() -> Language {
-    let locale = std::env::var("LANG")
-        .or_else(|_| std::env::var("LC_ALL"))
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if locale.starts_with("zh") {
-        Language::Chinese
-    } else if locale.starts_with("en") {
-        Language::English
-    } else {
-        Language::Chinese
-    }
+    Language::English
 }

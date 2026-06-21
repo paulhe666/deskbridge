@@ -618,3 +618,207 @@ button:disabled {
 .link-button {
   text-decoration: none;
 }
+
+/* Deskbridge 1.5.5 compact visual refinement */
+:root {
+  font-size: 14px;
+}
+
+body {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(91, 176, 255, 0.13), transparent 26%),
+    radial-gradient(circle at 88% 8%, rgba(42, 211, 188, 0.11), transparent 30%),
+    linear-gradient(180deg, #fbfdff 0%, #f5f8fc 100%);
+}
+
+.app-shell {
+  width: min(880px, calc(100% - 36px));
+  padding: 18px 0 28px;
+}
+
+.hero-card {
+  min-height: 0;
+  padding: 18px 20px;
+  border-radius: 24px;
+  box-shadow: 0 18px 44px rgba(34, 57, 92, 0.10);
+}
+
+.brand-row {
+  gap: 16px;
+}
+
+.brand-row h1 {
+  margin-bottom: 4px;
+  font-size: clamp(32px, 5vw, 46px);
+  line-height: 0.98;
+  letter-spacing: -0.06em;
+}
+
+.brand-row p {
+  font-size: 17px;
+  line-height: 1.35;
+  color: #6b7b91;
+}
+
+.app-mark.image-mark {
+  width: 62px;
+  height: 62px;
+  border-radius: 20px;
+  padding: 0;
+  color: transparent;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+  overflow: visible;
+}
+
+.app-mark.image-mark img {
+  width: 78px;
+  height: 78px;
+  object-fit: contain;
+  transform: translate(-8px, -8px);
+  filter: drop-shadow(0 13px 20px rgba(18, 120, 204, 0.22));
+}
+
+.status-pill {
+  min-height: 34px;
+  padding: 0 13px;
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.icon-button {
+  width: 38px;
+  height: 38px;
+  border-radius: 14px;
+}
+
+.grid-layout {
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.panel {
+  padding: 17px;
+  border-radius: 22px;
+  box-shadow: 0 14px 32px rgba(35, 58, 90, 0.085);
+}
+
+.panel-header {
+  margin-bottom: 12px;
+}
+
+.panel-title {
+  gap: 8px;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+
+.form-grid {
+  gap: 12px;
+}
+
+label {
+  gap: 6px;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+input,
+select {
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+.command-card {
+  gap: 6px;
+  padding: 13px 14px;
+  border-radius: 16px;
+}
+
+.command-card span {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+}
+
+.command-card code {
+  font-size: 13px;
+}
+
+.button-row {
+  gap: 9px;
+  margin-top: 12px;
+}
+
+button,
+.link-button {
+  min-height: 38px;
+  padding: 0 13px;
+  border-radius: 13px;
+  font-size: 14px;
+}
+
+.logs-box {
+  min-height: 150px;
+  max-height: 230px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.settings-modal {
+  width: min(620px, calc(100vw - 52px));
+  max-height: min(660px, calc(100vh - 52px));
+  padding: 18px;
+  border-radius: 24px;
+}
+
+.modal-header {
+  margin-bottom: 13px;
+}
+
+.modal-header h2 {
+  font-size: 24px;
+}
+
+.tabs {
+  margin-bottom: 14px;
+  padding: 5px;
+  border-radius: 15px;
+}
+
+.settings-body {
+  gap: 14px;
+}
+
+.form-grid.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.planned-box,
+.update-card,
+.info-row {
+  padding: 13px;
+  border-radius: 16px;
+}
+
+.key-grid span {
+  padding: 6px 9px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+@media (max-width: 860px) {
+  .app-shell {
+    width: min(720px, calc(100% - 24px));
+  }
+
+  .grid-layout,
+  .form-grid,
+  .form-grid.compact {
+    grid-template-columns: 1fr;
+  }
+}
