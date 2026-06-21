@@ -20,6 +20,23 @@ pub enum ModifierTarget {
     Control,
     Meta,
     Alt,
+    Shift,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyTarget {
+    Escape,
+    Backspace,
+    Delete,
+    Enter,
+    Tab,
+    Space,
+    CapsLock,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    ArrowDown,
     Disabled,
 }
 
@@ -37,6 +54,16 @@ pub struct AppConfig {
     pub mac_command_mapping: ModifierTarget,
     pub mac_control_mapping: ModifierTarget,
     pub mac_option_mapping: ModifierTarget,
+    pub mac_shift_mapping: ModifierTarget,
+    pub mac_caps_lock_mapping: KeyTarget,
+    pub mac_escape_mapping: KeyTarget,
+    pub mac_backspace_mapping: KeyTarget,
+    pub mac_delete_mapping: KeyTarget,
+    pub mac_arrow_left_mapping: KeyTarget,
+    pub mac_arrow_right_mapping: KeyTarget,
+    pub mac_arrow_up_mapping: KeyTarget,
+    pub mac_arrow_down_mapping: KeyTarget,
+    pub auto_update_check: bool,
 }
 
 impl Default for AppConfig {
@@ -54,6 +81,16 @@ impl Default for AppConfig {
             mac_command_mapping: ModifierTarget::Control,
             mac_control_mapping: ModifierTarget::Control,
             mac_option_mapping: ModifierTarget::Alt,
+            mac_shift_mapping: ModifierTarget::Shift,
+            mac_caps_lock_mapping: KeyTarget::CapsLock,
+            mac_escape_mapping: KeyTarget::Escape,
+            mac_backspace_mapping: KeyTarget::Backspace,
+            mac_delete_mapping: KeyTarget::Delete,
+            mac_arrow_left_mapping: KeyTarget::ArrowLeft,
+            mac_arrow_right_mapping: KeyTarget::ArrowRight,
+            mac_arrow_up_mapping: KeyTarget::ArrowUp,
+            mac_arrow_down_mapping: KeyTarget::ArrowDown,
+            auto_update_check: true,
         }
     }
 }
@@ -114,6 +151,45 @@ impl AppConfig {
                     config.mac_option_mapping =
                         ModifierTarget::parse(value.trim()).unwrap_or(config.mac_option_mapping)
                 }
+                "mac_shift_mapping" => {
+                    config.mac_shift_mapping =
+                        ModifierTarget::parse(value.trim()).unwrap_or(config.mac_shift_mapping)
+                }
+                "mac_caps_lock_mapping" => {
+                    config.mac_caps_lock_mapping =
+                        KeyTarget::parse(value.trim()).unwrap_or(config.mac_caps_lock_mapping)
+                }
+                "mac_escape_mapping" => {
+                    config.mac_escape_mapping =
+                        KeyTarget::parse(value.trim()).unwrap_or(config.mac_escape_mapping)
+                }
+                "mac_backspace_mapping" => {
+                    config.mac_backspace_mapping =
+                        KeyTarget::parse(value.trim()).unwrap_or(config.mac_backspace_mapping)
+                }
+                "mac_delete_mapping" => {
+                    config.mac_delete_mapping =
+                        KeyTarget::parse(value.trim()).unwrap_or(config.mac_delete_mapping)
+                }
+                "mac_arrow_left_mapping" => {
+                    config.mac_arrow_left_mapping =
+                        KeyTarget::parse(value.trim()).unwrap_or(config.mac_arrow_left_mapping)
+                }
+                "mac_arrow_right_mapping" => {
+                    config.mac_arrow_right_mapping =
+                        KeyTarget::parse(value.trim()).unwrap_or(config.mac_arrow_right_mapping)
+                }
+                "mac_arrow_up_mapping" => {
+                    config.mac_arrow_up_mapping =
+                        KeyTarget::parse(value.trim()).unwrap_or(config.mac_arrow_up_mapping)
+                }
+                "mac_arrow_down_mapping" => {
+                    config.mac_arrow_down_mapping =
+                        KeyTarget::parse(value.trim()).unwrap_or(config.mac_arrow_down_mapping)
+                }
+                "auto_update_check" => {
+                    config.auto_update_check = parse_bool(value, config.auto_update_check)
+                }
                 _ => {}
             }
         }
@@ -131,7 +207,7 @@ impl AppConfig {
         fs::write(
             path,
             format!(
-                "role={}\nlanguage={}\nlanguage_source=user\nbind={}\nserver={}\nedge={}\nscroll_scale={:.3}\nscroll_response={:.3}\nscroll_max_step={:.1}\nscroll_frame_ms={}\nmac_command_mapping={}\nmac_control_mapping={}\nmac_option_mapping={}\n",
+                "role={}\nlanguage={}\nlanguage_source=user\nbind={}\nserver={}\nedge={}\nscroll_scale={:.3}\nscroll_response={:.3}\nscroll_max_step={:.1}\nscroll_frame_ms={}\nmac_command_mapping={}\nmac_control_mapping={}\nmac_option_mapping={}\nmac_shift_mapping={}\nmac_caps_lock_mapping={}\nmac_escape_mapping={}\nmac_backspace_mapping={}\nmac_delete_mapping={}\nmac_arrow_left_mapping={}\nmac_arrow_right_mapping={}\nmac_arrow_up_mapping={}\nmac_arrow_down_mapping={}\nauto_update_check={}\n",
                 match self.role {
                     Role::Server => "server",
                     Role::Client => "client",
@@ -150,6 +226,16 @@ impl AppConfig {
                 self.mac_command_mapping.as_str(),
                 self.mac_control_mapping.as_str(),
                 self.mac_option_mapping.as_str(),
+                self.mac_shift_mapping.as_str(),
+                self.mac_caps_lock_mapping.as_str(),
+                self.mac_escape_mapping.as_str(),
+                self.mac_backspace_mapping.as_str(),
+                self.mac_delete_mapping.as_str(),
+                self.mac_arrow_left_mapping.as_str(),
+                self.mac_arrow_right_mapping.as_str(),
+                self.mac_arrow_up_mapping.as_str(),
+                self.mac_arrow_down_mapping.as_str(),
+                self.auto_update_check,
             ),
         )
     }
@@ -178,6 +264,7 @@ impl ModifierTarget {
             "control" | "ctrl" => Some(Self::Control),
             "meta" | "win" | "windows" | "command" => Some(Self::Meta),
             "alt" | "option" => Some(Self::Alt),
+            "shift" => Some(Self::Shift),
             "disabled" | "none" | "off" => Some(Self::Disabled),
             _ => None,
         }
@@ -188,6 +275,44 @@ impl ModifierTarget {
             Self::Control => "control",
             Self::Meta => "meta",
             Self::Alt => "alt",
+            Self::Shift => "shift",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl KeyTarget {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "escape" | "esc" => Some(Self::Escape),
+            "backspace" => Some(Self::Backspace),
+            "delete" | "forward_delete" => Some(Self::Delete),
+            "enter" | "return" => Some(Self::Enter),
+            "tab" => Some(Self::Tab),
+            "space" => Some(Self::Space),
+            "caps_lock" | "capslock" => Some(Self::CapsLock),
+            "arrow_left" | "left" => Some(Self::ArrowLeft),
+            "arrow_right" | "right" => Some(Self::ArrowRight),
+            "arrow_up" | "up" => Some(Self::ArrowUp),
+            "arrow_down" | "down" => Some(Self::ArrowDown),
+            "disabled" | "none" | "off" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Escape => "escape",
+            Self::Backspace => "backspace",
+            Self::Delete => "delete",
+            Self::Enter => "enter",
+            Self::Tab => "tab",
+            Self::Space => "space",
+            Self::CapsLock => "caps_lock",
+            Self::ArrowLeft => "arrow_left",
+            Self::ArrowRight => "arrow_right",
+            Self::ArrowUp => "arrow_up",
+            Self::ArrowDown => "arrow_down",
             Self::Disabled => "disabled",
         }
     }
@@ -212,6 +337,14 @@ fn home_dir() -> PathBuf {
 
 fn parse_f64(value: &str, default: f64) -> f64 {
     value.trim().parse().unwrap_or(default)
+}
+
+fn parse_bool(value: &str, default: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => default,
+    }
 }
 
 fn default_language() -> Language {

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::config::ModifierTarget;
+use crate::config::{KeyTarget, ModifierTarget};
 use crate::platform::ConnectionProfile;
 use crate::protocol::{InputEvent, KeyState};
 
@@ -11,43 +11,83 @@ pub struct ModifierMapping {
     command: ModifierTarget,
     control: ModifierTarget,
     option: ModifierTarget,
+    shift: ModifierTarget,
+    caps_lock: KeyTarget,
+    escape: KeyTarget,
+    backspace: KeyTarget,
+    delete: KeyTarget,
+    arrow_left: KeyTarget,
+    arrow_right: KeyTarget,
+    arrow_up: KeyTarget,
+    arrow_down: KeyTarget,
 }
 
 impl ModifierMapping {
     pub fn for_profile(profile: ConnectionProfile) -> Self {
         let defaults = match profile {
-            ConnectionProfile::MacOSToMacOS => Self {
-                command: ModifierTarget::Meta,
-                control: ModifierTarget::Control,
-                option: ModifierTarget::Alt,
-            },
-            _ => Self {
-                command: ModifierTarget::Control,
-                control: ModifierTarget::Control,
-                option: ModifierTarget::Alt,
-            },
+            ConnectionProfile::MacOSToMacOS => Self::defaults(
+                ModifierTarget::Meta,
+                ModifierTarget::Control,
+                ModifierTarget::Alt,
+                ModifierTarget::Shift,
+            ),
+            _ => Self::defaults(
+                ModifierTarget::Control,
+                ModifierTarget::Control,
+                ModifierTarget::Alt,
+                ModifierTarget::Shift,
+            ),
         };
         let mapping = Self {
             command: env_modifier_target("DESKBRIDGE_MAC_COMMAND_MAPPING", defaults.command),
             control: env_modifier_target("DESKBRIDGE_MAC_CONTROL_MAPPING", defaults.control),
             option: env_modifier_target("DESKBRIDGE_MAC_OPTION_MAPPING", defaults.option),
+            shift: env_modifier_target("DESKBRIDGE_MAC_SHIFT_MAPPING", defaults.shift),
+            caps_lock: env_key_target("DESKBRIDGE_MAC_CAPS_LOCK_MAPPING", defaults.caps_lock),
+            escape: env_key_target("DESKBRIDGE_MAC_ESCAPE_MAPPING", defaults.escape),
+            backspace: env_key_target("DESKBRIDGE_MAC_BACKSPACE_MAPPING", defaults.backspace),
+            delete: env_key_target("DESKBRIDGE_MAC_DELETE_MAPPING", defaults.delete),
+            arrow_left: env_key_target("DESKBRIDGE_MAC_ARROW_LEFT_MAPPING", defaults.arrow_left),
+            arrow_right: env_key_target("DESKBRIDGE_MAC_ARROW_RIGHT_MAPPING", defaults.arrow_right),
+            arrow_up: env_key_target("DESKBRIDGE_MAC_ARROW_UP_MAPPING", defaults.arrow_up),
+            arrow_down: env_key_target("DESKBRIDGE_MAC_ARROW_DOWN_MAPPING", defaults.arrow_down),
         };
         eprintln!(
-            "macOS server modifier mapping for {}: Command->{}, Control->{}, Option->{}",
+            "macOS server mapping for {}: Command->{}, Control->{}, Option->{}, Shift->{}, CapsLock->{}",
             profile.as_str(),
             mapping.command.as_str(),
             mapping.control.as_str(),
-            mapping.option.as_str()
+            mapping.option.as_str(),
+            mapping.shift.as_str(),
+            mapping.caps_lock.as_str()
         );
         mapping
     }
 
     #[cfg(test)]
     fn new(command: ModifierTarget, control: ModifierTarget, option: ModifierTarget) -> Self {
+        Self::defaults(command, control, option, ModifierTarget::Shift)
+    }
+
+    fn defaults(
+        command: ModifierTarget,
+        control: ModifierTarget,
+        option: ModifierTarget,
+        shift: ModifierTarget,
+    ) -> Self {
         Self {
             command,
             control,
             option,
+            shift,
+            caps_lock: KeyTarget::CapsLock,
+            escape: KeyTarget::Escape,
+            backspace: KeyTarget::Backspace,
+            delete: KeyTarget::Delete,
+            arrow_left: KeyTarget::ArrowLeft,
+            arrow_right: KeyTarget::ArrowRight,
+            arrow_up: KeyTarget::ArrowUp,
+            arrow_down: KeyTarget::ArrowDown,
         }
     }
 
@@ -56,7 +96,20 @@ impl ModifierMapping {
             ModifierGroup::Command => self.command,
             ModifierGroup::Control => self.control,
             ModifierGroup::Option => self.option,
-            ModifierGroup::Shift => ModifierTarget::Disabled,
+            ModifierGroup::Shift => self.shift,
+        }
+    }
+
+    fn key_target(self, mac_keycode: u16) -> Option<KeyTarget> {
+        match mac_keycode {
+            53 => Some(self.escape),
+            51 => Some(self.backspace),
+            117 => Some(self.delete),
+            123 => Some(self.arrow_left),
+            124 => Some(self.arrow_right),
+            125 => Some(self.arrow_down),
+            126 => Some(self.arrow_up),
+            _ => None,
         }
     }
 }
@@ -90,7 +143,7 @@ impl KeyboardRouter {
         if modifier_group(mac_keycode).is_some() {
             return Vec::new();
         }
-        let Some(scancode) = mac_keycode_to_windows_scancode(mac_keycode) else {
+        let Some(scancode) = self.mapped_scancode(mac_keycode) else {
             return Vec::new();
         };
         if self.regular_keys.contains(&mac_keycode) {
@@ -104,7 +157,7 @@ impl KeyboardRouter {
         if modifier_group(mac_keycode).is_some() {
             return Vec::new();
         }
-        let Some(scancode) = mac_keycode_to_windows_scancode(mac_keycode) else {
+        let Some(scancode) = self.mapped_scancode(mac_keycode) else {
             return Vec::new();
         };
         if !self.regular_keys.remove(&mac_keycode) {
@@ -115,10 +168,10 @@ impl KeyboardRouter {
 
     pub fn flags_changed(&mut self, mac_keycode: u16, flags: u64) -> Vec<InputEvent> {
         if mac_keycode == 57 {
-            return vec![
-                key_event(CAPS_LOCK_SCANCODE, KeyState::Down),
-                key_event(CAPS_LOCK_SCANCODE, KeyState::Up),
-            ];
+            let Some(scancode) = key_target_scancode(self.mapping.caps_lock) else {
+                return Vec::new();
+            };
+            return vec![key_event(scancode, KeyState::Down), key_event(scancode, KeyState::Up)];
         }
         let Some(group) = modifier_group(mac_keycode) else {
             return Vec::new();
@@ -175,10 +228,14 @@ impl KeyboardRouter {
 
     fn modifier_scancode(&self, group: ModifierGroup, keycode: u16) -> Option<u16> {
         let right = matches!(keycode, 54 | 60 | 61 | 62);
-        match group {
-            ModifierGroup::Shift => Some(if right { 54 } else { 42 }),
-            _ => target_scancode(self.mapping.target(group), right),
+        target_scancode(self.mapping.target(group), right)
+    }
+
+    fn mapped_scancode(&self, mac_keycode: u16) -> Option<u16> {
+        if let Some(target) = self.mapping.key_target(mac_keycode) {
+            return key_target_scancode(target);
         }
+        mac_keycode_to_windows_scancode(mac_keycode)
     }
 
     fn press_logical(&mut self, scancode: u16) -> Vec<InputEvent> {
@@ -216,6 +273,13 @@ fn env_modifier_target(name: &str, default: ModifierTarget) -> ModifierTarget {
         .unwrap_or(default)
 }
 
+fn env_key_target(name: &str, default: KeyTarget) -> KeyTarget {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| KeyTarget::parse(value.trim()))
+        .unwrap_or(default)
+}
+
 fn target_scancode(target: ModifierTarget, right: bool) -> Option<u16> {
     match (target, right) {
         (ModifierTarget::Control, false) => Some(29),
@@ -224,7 +288,26 @@ fn target_scancode(target: ModifierTarget, right: bool) -> Option<u16> {
         (ModifierTarget::Meta, true) => Some(348),
         (ModifierTarget::Alt, false) => Some(56),
         (ModifierTarget::Alt, true) => Some(312),
+        (ModifierTarget::Shift, false) => Some(42),
+        (ModifierTarget::Shift, true) => Some(54),
         (ModifierTarget::Disabled, _) => None,
+    }
+}
+
+fn key_target_scancode(target: KeyTarget) -> Option<u16> {
+    match target {
+        KeyTarget::Escape => Some(1),
+        KeyTarget::Backspace => Some(14),
+        KeyTarget::Delete => Some(339),
+        KeyTarget::Enter => Some(28),
+        KeyTarget::Tab => Some(15),
+        KeyTarget::Space => Some(57),
+        KeyTarget::CapsLock => Some(CAPS_LOCK_SCANCODE),
+        KeyTarget::ArrowLeft => Some(331),
+        KeyTarget::ArrowRight => Some(333),
+        KeyTarget::ArrowUp => Some(328),
+        KeyTarget::ArrowDown => Some(336),
+        KeyTarget::Disabled => None,
     }
 }
 

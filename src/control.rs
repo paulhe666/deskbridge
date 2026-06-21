@@ -176,6 +176,42 @@ impl ServiceLaunch {
                         "DESKBRIDGE_MAC_OPTION_MAPPING".into(),
                         config.mac_option_mapping.as_str().into(),
                     ),
+                    (
+                        "DESKBRIDGE_MAC_SHIFT_MAPPING".into(),
+                        config.mac_shift_mapping.as_str().into(),
+                    ),
+                    (
+                        "DESKBRIDGE_MAC_CAPS_LOCK_MAPPING".into(),
+                        config.mac_caps_lock_mapping.as_str().into(),
+                    ),
+                    (
+                        "DESKBRIDGE_MAC_ESCAPE_MAPPING".into(),
+                        config.mac_escape_mapping.as_str().into(),
+                    ),
+                    (
+                        "DESKBRIDGE_MAC_BACKSPACE_MAPPING".into(),
+                        config.mac_backspace_mapping.as_str().into(),
+                    ),
+                    (
+                        "DESKBRIDGE_MAC_DELETE_MAPPING".into(),
+                        config.mac_delete_mapping.as_str().into(),
+                    ),
+                    (
+                        "DESKBRIDGE_MAC_ARROW_LEFT_MAPPING".into(),
+                        config.mac_arrow_left_mapping.as_str().into(),
+                    ),
+                    (
+                        "DESKBRIDGE_MAC_ARROW_RIGHT_MAPPING".into(),
+                        config.mac_arrow_right_mapping.as_str().into(),
+                    ),
+                    (
+                        "DESKBRIDGE_MAC_ARROW_UP_MAPPING".into(),
+                        config.mac_arrow_up_mapping.as_str().into(),
+                    ),
+                    (
+                        "DESKBRIDGE_MAC_ARROW_DOWN_MAPPING".into(),
+                        config.mac_arrow_down_mapping.as_str().into(),
+                    ),
                 ],
             },
             Role::Client => Self {
