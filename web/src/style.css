@@ -893,9 +893,18 @@ button,
 }
 
 .icon-button {
-  width: 32px;
-  height: 32px;
-  border-radius: 11px;
+  width: 42px;
+  height: 42px;
+  border-radius: 15px;
+  background: linear-gradient(180deg, #ffffff 0%, #f5f9ff 100%);
+  border-color: #bfd0e3;
+  box-shadow: 0 10px 22px rgba(62, 89, 126, 0.14);
+}
+
+.icon-button svg {
+  width: 21px;
+  height: 21px;
+  stroke-width: 2.2;
 }
 
 @media (max-width: 760px) {
