@@ -34,6 +34,9 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked --version '^2'
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -61,7 +64,7 @@ jobs:
 
       - name: Build Linux bundles
         working-directory: source
-        run: npx --prefix web tauri build --bundles deb,appimage
+        run: cargo tauri build --bundles deb,appimage
 
       - name: Collect Linux artifacts
         working-directory: source
