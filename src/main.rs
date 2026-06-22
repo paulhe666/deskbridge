@@ -46,7 +46,11 @@ fn main() -> ExitCode {
     };
 
     let result = match command {
-        Command::Gui => gui::run(),
+        Command::Gui => {
+            #[cfg(target_os = "linux")]
+            linux::prepare_gui_environment();
+            gui::run()
+        }
         Command::Server { bind, edge } => server::run(server::ServerConfig { bind, edge }),
         Command::Client { server } => client::run(&server),
     };

@@ -16,7 +16,9 @@ fn main() {
     }
 
     if env::var_os("CARGO_CFG_WINDOWS").is_some() {
-        println!("cargo:warning=Windows executable resources are handled by Tauri; skipping legacy rc embedding to avoid duplicate ICON resources");
+        println!(
+            "cargo:warning=Windows executable resources are handled by Tauri; skipping legacy rc embedding to avoid duplicate ICON resources"
+        );
     }
 }
 

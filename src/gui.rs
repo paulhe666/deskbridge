@@ -3,13 +3,14 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{AppConfig, KeyTarget, Language, ModifierTarget, Role};
+use crate::config::{self, AppConfig, KeyTarget, Language, ModifierTarget, Role};
 use crate::control::{ControlBackend, ProcessBackend};
 use crate::server::Edge;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASES_URL: &str = "https://github.com/paulhe666/deskbridge/releases";
-const LATEST_RELEASE_API: &str = "https://api.github.com/repos/paulhe666/deskbridge/releases/latest";
+const LATEST_RELEASE_API: &str =
+    "https://api.github.com/repos/paulhe666/deskbridge/releases/latest";
 
 pub fn run() -> std::io::Result<()> {
     tauri::Builder::default()
@@ -41,16 +42,19 @@ fn get_state(state: tauri::State<'_, AppState>) -> Result<ApiState, String> {
 }
 
 #[tauri::command]
-fn save_config(
-    config: ConfigView,
-    state: tauri::State<'_, AppState>,
-) -> Result<ApiState, String> {
+fn save_config(config: ConfigView, state: tauri::State<'_, AppState>) -> Result<ApiState, String> {
     {
         let mut current = state
             .config
             .lock()
             .map_err(|_| "config mutex poisoned".to_string())?;
+        let path = config::set_config_path_override(&config.config_path)
+            .map_err(|error| format!("failed to set config path: {error}"))?;
         config.apply_to(&mut current);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("failed to create config directory: {error}"))?;
+        }
         current
             .save()
             .map_err(|error| format!("failed to save config: {error}"))?;
@@ -191,6 +195,7 @@ struct ConfigView {
     mac_arrow_up_mapping: String,
     mac_arrow_down_mapping: String,
     auto_update_check: bool,
+    config_path: String,
 }
 
 fn fetch_update_info() -> Result<UpdateInfo, Box<dyn std::error::Error>> {
@@ -289,6 +294,7 @@ impl ConfigView {
             mac_arrow_up_mapping: config.mac_arrow_up_mapping.as_str().to_string(),
             mac_arrow_down_mapping: config.mac_arrow_down_mapping.as_str().to_string(),
             auto_update_check: config.auto_update_check,
+            config_path: config::config_path().to_string_lossy().to_string(),
         }
     }
 
@@ -324,8 +330,8 @@ impl ConfigView {
             KeyTarget::parse(&self.mac_delete_mapping).unwrap_or(config.mac_delete_mapping);
         config.mac_arrow_left_mapping =
             KeyTarget::parse(&self.mac_arrow_left_mapping).unwrap_or(config.mac_arrow_left_mapping);
-        config.mac_arrow_right_mapping =
-            KeyTarget::parse(&self.mac_arrow_right_mapping).unwrap_or(config.mac_arrow_right_mapping);
+        config.mac_arrow_right_mapping = KeyTarget::parse(&self.mac_arrow_right_mapping)
+            .unwrap_or(config.mac_arrow_right_mapping);
         config.mac_arrow_up_mapping =
             KeyTarget::parse(&self.mac_arrow_up_mapping).unwrap_or(config.mac_arrow_up_mapping);
         config.mac_arrow_down_mapping =

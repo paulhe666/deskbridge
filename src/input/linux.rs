@@ -1,225 +1,605 @@
-use std::io;
+use std::collections::HashSet;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+use std::mem::{size_of, zeroed};
+use std::os::fd::AsRawFd;
+use std::thread;
+use std::time::Duration;
 
 use crate::linux::{self, DisplayServer};
 use crate::platform::ConnectionProfile;
 use crate::protocol::{InputEvent, KeyState, MouseButton};
 
-pub struct InputSink {
-    backend: InputBackend,
-    screen_size: (u32, u32),
-}
+const UINPUT_PATH: &str = "/dev/uinput";
+const UINPUT_DEVICE_NAME: &str = "Deskbridge Virtual Input";
 
-#[derive(Debug, Clone, Copy)]
-enum InputBackend {
-    WaylandYdotool,
-    X11Xdotool,
+const EV_SYN: u16 = 0x00;
+const EV_KEY: u16 = 0x01;
+const EV_REL: u16 = 0x02;
+const EV_ABS: u16 = 0x03;
+
+const SYN_REPORT: u16 = 0x00;
+
+const REL_X: u16 = 0x00;
+const REL_Y: u16 = 0x01;
+const REL_HWHEEL: u16 = 0x06;
+const REL_WHEEL: u16 = 0x08;
+
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
+
+const BTN_LEFT: u16 = 0x110;
+const BTN_RIGHT: u16 = 0x111;
+const BTN_MIDDLE: u16 = 0x112;
+const BTN_SIDE: u16 = 0x113;
+const BTN_EXTRA: u16 = 0x114;
+const BTN_FORWARD: u16 = 0x115;
+const BTN_BACK: u16 = 0x116;
+
+const KEY_ESC: u16 = 1;
+const KEY_MAX_COMMON: u16 = 255;
+const KEY_KPENTER: u16 = 96;
+const KEY_RIGHTCTRL: u16 = 97;
+const KEY_RIGHTALT: u16 = 100;
+const KEY_HOME: u16 = 102;
+const KEY_UP: u16 = 103;
+const KEY_PAGEUP: u16 = 104;
+const KEY_LEFT: u16 = 105;
+const KEY_RIGHT: u16 = 106;
+const KEY_END: u16 = 107;
+const KEY_DOWN: u16 = 108;
+const KEY_PAGEDOWN: u16 = 109;
+const KEY_INSERT: u16 = 110;
+const KEY_DELETE: u16 = 111;
+const KEY_LEFTMETA: u16 = 125;
+
+const BUS_USB: u16 = 0x03;
+const UINPUT_MAX_NAME_SIZE: usize = 80;
+const VIRTUAL_VENDOR_ID: u16 = 0x4453;
+const VIRTUAL_PRODUCT_ID: u16 = 0x4247;
+const VIRTUAL_VERSION: u16 = 0x0100;
+
+const IOC_NRBITS: u64 = 8;
+const IOC_TYPEBITS: u64 = 8;
+const IOC_SIZEBITS: u64 = 14;
+
+const IOC_NRSHIFT: u64 = 0;
+const IOC_TYPESHIFT: u64 = IOC_NRSHIFT + IOC_NRBITS;
+const IOC_SIZESHIFT: u64 = IOC_TYPESHIFT + IOC_TYPEBITS;
+const IOC_DIRSHIFT: u64 = IOC_SIZESHIFT + IOC_SIZEBITS;
+
+const IOC_NONE: u64 = 0;
+const IOC_WRITE: u64 = 1;
+const UINPUT_IOCTL_BASE: u8 = b'U';
+
+const UI_DEV_CREATE: libc::c_ulong = ioc(IOC_NONE, UINPUT_IOCTL_BASE, 1, 0);
+const UI_DEV_DESTROY: libc::c_ulong = ioc(IOC_NONE, UINPUT_IOCTL_BASE, 2, 0);
+const UI_DEV_SETUP: libc::c_ulong = iow::<UinputSetup>(UINPUT_IOCTL_BASE, 3);
+const UI_ABS_SETUP: libc::c_ulong = iow::<UinputAbsSetup>(UINPUT_IOCTL_BASE, 4);
+const UI_SET_EVBIT: libc::c_ulong = iow::<libc::c_int>(UINPUT_IOCTL_BASE, 100);
+const UI_SET_KEYBIT: libc::c_ulong = iow::<libc::c_int>(UINPUT_IOCTL_BASE, 101);
+const UI_SET_RELBIT: libc::c_ulong = iow::<libc::c_int>(UINPUT_IOCTL_BASE, 102);
+const UI_SET_ABSBIT: libc::c_ulong = iow::<libc::c_int>(UINPUT_IOCTL_BASE, 103);
+const UI_SET_PROPBIT: libc::c_ulong = iow::<libc::c_int>(UINPUT_IOCTL_BASE, 110);
+
+const INPUT_PROP_POINTER: u16 = 0x00;
+
+pub struct InputSink {
+    backend: NativeUinput,
+    screen_size: (u32, u32),
+    mouse_position: (i32, i32),
+    pressed_keys: HashSet<u16>,
+    pressed_buttons: HashSet<MouseButton>,
+    remote_active: bool,
 }
 
 impl InputSink {
     pub fn new(_profile: ConnectionProfile) -> io::Result<Self> {
         let display = DisplayServer::detect();
-        let backend = match display {
-            DisplayServer::Wayland if linux::command_exists("ydotool") => InputBackend::WaylandYdotool,
-            DisplayServer::Wayland => {
-                return Err(linux::unsupported(
-                    "Wayland input injection requires ydotool and an active ydotoold daemon",
-                ));
+        let screen_size = detect_screen_size(display);
+        let backend = NativeUinput::new(screen_size).map_err(|error| {
+            if matches!(error.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound) {
+                linux::unsupported(format!(
+                    "native Linux input injection requires write access to {UINPUT_PATH}; run `sudo modprobe uinput` and `sh scripts/setup_linux_uinput.sh`, then log out and back in ({error})"
+                ))
+            } else {
+                error
             }
-            DisplayServer::X11 if linux::command_exists("xdotool") => InputBackend::X11Xdotool,
-            DisplayServer::X11 => {
-                return Err(linux::unsupported("X11 input injection requires xdotool"));
-            }
-            DisplayServer::Unknown => {
-                return Err(linux::unsupported(
-                    "Linux input injection requires DISPLAY or WAYLAND_DISPLAY",
-                ));
-            }
-        };
-        let screen_size = backend.screen_size();
+        })?;
+
         eprintln!(
-            "linux input backend: {} ({display}), screen {}x{}",
-            backend.as_str(),
+            "linux input backend: native-uinput ({display}), screen {}x{}",
             screen_size.0,
             screen_size.1,
             display = display.as_str()
         );
+
         Ok(Self {
             backend,
             screen_size,
+            mouse_position: (0, 0),
+            pressed_keys: HashSet::new(),
+            pressed_buttons: HashSet::new(),
+            remote_active: false,
         })
     }
 
     pub fn apply(&mut self, event: InputEvent) -> io::Result<()> {
-        self.backend.apply(event)
+        match event {
+            InputEvent::MouseEnter { x, y } => self.mouse_enter(x, y),
+            InputEvent::MouseLeave => {
+                self.mouse_leave()?;
+                Ok(())
+            }
+            _ if !self.remote_active => Ok(()),
+            InputEvent::MouseDelta { dx, dy } => self.mouse_delta(dx, dy),
+            InputEvent::MouseButton { button, down } => self.mouse_button(button, down),
+            InputEvent::MouseWheel {
+                horizontal,
+                vertical,
+            } => self.mouse_wheel(horizontal, vertical),
+            InputEvent::Key { scancode, state } => self.key(scancode, state),
+        }
     }
 
     pub fn screen_size(&self) -> (u32, u32) {
         self.screen_size
     }
+
+    fn mouse_enter(&mut self, x: i32, y: i32) -> io::Result<()> {
+        if self.remote_active {
+            self.release_remote_input()?;
+        }
+        self.remote_active = true;
+        self.mouse_position = clamp_point(x, y, self.screen_size);
+        self.backend
+            .move_abs(self.mouse_position.0, self.mouse_position.1)
+    }
+
+    fn mouse_delta(&mut self, dx: i32, dy: i32) -> io::Result<()> {
+        let next_x = self.mouse_position.0.saturating_add(dx);
+        let next_y = self.mouse_position.1.saturating_add(dy);
+        self.mouse_position = clamp_point(next_x, next_y, self.screen_size);
+        self.backend.move_rel(dx, dy)
+    }
+
+    fn mouse_button(&mut self, button: MouseButton, down: bool) -> io::Result<()> {
+        self.backend.button(button, down)?;
+        if down {
+            self.pressed_buttons.insert(button);
+        } else {
+            self.pressed_buttons.remove(&button);
+        }
+        Ok(())
+    }
+
+    fn mouse_wheel(&mut self, horizontal: i16, vertical: i16) -> io::Result<()> {
+        self.backend
+            .scroll(wheel_steps(horizontal), wheel_steps(vertical))
+    }
+
+    fn key(&mut self, scancode: u16, state: KeyState) -> io::Result<()> {
+        let Some(keycode) = scancode_to_linux_key(scancode) else {
+            eprintln!("linux native-uinput: unsupported scancode {scancode}");
+            return Ok(());
+        };
+        match state {
+            KeyState::Down => {
+                if self.pressed_keys.insert(keycode) {
+                    self.backend.key(keycode, 1)?;
+                }
+            }
+            KeyState::Up => {
+                self.pressed_keys.remove(&keycode);
+                self.backend.key(keycode, 0)?;
+            }
+            KeyState::Repeat => {
+                self.backend.key(keycode, 2)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn mouse_leave(&mut self) -> io::Result<()> {
+        self.release_remote_input()?;
+        self.remote_active = false;
+        Ok(())
+    }
+
+    fn release_remote_input(&mut self) -> io::Result<()> {
+        for keycode in self.pressed_keys.drain().collect::<Vec<_>>() {
+            let _ = self.backend.key(keycode, 0);
+        }
+        for button in self.pressed_buttons.drain().collect::<Vec<_>>() {
+            let _ = self.backend.button(button, false);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for InputSink {
+    fn drop(&mut self) {
+        let _ = self.release_remote_input();
+    }
 }
 
 pub fn screen_size() -> (u32, u32) {
-    match DisplayServer::detect() {
-        DisplayServer::Wayland if linux::command_exists("ydotool") => {
-            InputBackend::WaylandYdotool.screen_size()
+    detect_screen_size(DisplayServer::detect())
+}
+
+struct NativeUinput {
+    file: File,
+    created: bool,
+}
+
+impl NativeUinput {
+    fn new(screen_size: (u32, u32)) -> io::Result<Self> {
+        let file = OpenOptions::new().write(true).open(UINPUT_PATH)?;
+        let mut device = Self {
+            file,
+            created: false,
+        };
+        device.enable_capabilities()?;
+        device.setup_device(screen_size)?;
+        device.create()?;
+        Ok(device)
+    }
+
+    fn enable_capabilities(&self) -> io::Result<()> {
+        self.ioctl_int(UI_SET_EVBIT, EV_KEY)?;
+        self.ioctl_int(UI_SET_EVBIT, EV_REL)?;
+        self.ioctl_int(UI_SET_EVBIT, EV_ABS)?;
+        self.ioctl_int(UI_SET_PROPBIT, INPUT_PROP_POINTER)?;
+
+        for keycode in KEY_ESC..=KEY_MAX_COMMON {
+            self.ioctl_int(UI_SET_KEYBIT, keycode)?;
         }
-        DisplayServer::X11 if linux::command_exists("xdotool") => InputBackend::X11Xdotool.screen_size(),
-        _ => fallback_screen_size(),
+        for button in [
+            BTN_LEFT,
+            BTN_RIGHT,
+            BTN_MIDDLE,
+            BTN_SIDE,
+            BTN_EXTRA,
+            BTN_BACK,
+            BTN_FORWARD,
+        ] {
+            self.ioctl_int(UI_SET_KEYBIT, button)?;
+        }
+        for rel in [REL_X, REL_Y, REL_WHEEL, REL_HWHEEL] {
+            self.ioctl_int(UI_SET_RELBIT, rel)?;
+        }
+        for abs in [ABS_X, ABS_Y] {
+            self.ioctl_int(UI_SET_ABSBIT, abs)?;
+        }
+        Ok(())
+    }
+
+    fn setup_device(&self, screen_size: (u32, u32)) -> io::Result<()> {
+        let mut setup: UinputSetup = unsafe { zeroed() };
+        setup.id.bustype = BUS_USB;
+        setup.id.vendor = VIRTUAL_VENDOR_ID;
+        setup.id.product = VIRTUAL_PRODUCT_ID;
+        setup.id.version = VIRTUAL_VERSION;
+        write_c_name(&mut setup.name, UINPUT_DEVICE_NAME);
+        self.ioctl_ref(UI_DEV_SETUP, &setup)?;
+
+        self.setup_abs(ABS_X, 0, screen_size.0.saturating_sub(1).max(1) as i32)?;
+        self.setup_abs(ABS_Y, 0, screen_size.1.saturating_sub(1).max(1) as i32)
+    }
+
+    fn setup_abs(&self, code: u16, minimum: i32, maximum: i32) -> io::Result<()> {
+        let abs_setup = UinputAbsSetup {
+            code,
+            absinfo: InputAbsInfo {
+                value: 0,
+                minimum,
+                maximum,
+                fuzz: 0,
+                flat: 0,
+                resolution: 1,
+            },
+        };
+        self.ioctl_ref(UI_ABS_SETUP, &abs_setup)
+    }
+
+    fn create(&mut self) -> io::Result<()> {
+        self.ioctl_none(UI_DEV_CREATE)?;
+        self.created = true;
+        thread::sleep(Duration::from_millis(80));
+        Ok(())
+    }
+
+    fn move_abs(&mut self, x: i32, y: i32) -> io::Result<()> {
+        self.emit(EV_ABS, ABS_X, x)?;
+        self.emit(EV_ABS, ABS_Y, y)?;
+        self.sync()
+    }
+
+    fn move_rel(&mut self, dx: i32, dy: i32) -> io::Result<()> {
+        if dx != 0 {
+            self.emit(EV_REL, REL_X, dx)?;
+        }
+        if dy != 0 {
+            self.emit(EV_REL, REL_Y, dy)?;
+        }
+        self.sync()
+    }
+
+    fn button(&mut self, button: MouseButton, down: bool) -> io::Result<()> {
+        self.emit(EV_KEY, mouse_button_code(button), if down { 1 } else { 0 })?;
+        self.sync()
+    }
+
+    fn scroll(&mut self, horizontal: i32, vertical: i32) -> io::Result<()> {
+        if vertical != 0 {
+            self.emit(EV_REL, REL_WHEEL, vertical)?;
+        }
+        if horizontal != 0 {
+            self.emit(EV_REL, REL_HWHEEL, horizontal)?;
+        }
+        self.sync()
+    }
+
+    fn key(&mut self, keycode: u16, value: i32) -> io::Result<()> {
+        self.emit(EV_KEY, keycode, value)?;
+        self.sync()
+    }
+
+    fn emit(&mut self, event_type: u16, code: u16, value: i32) -> io::Result<()> {
+        let event = InputEventRaw {
+            time: libc::timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+            event_type,
+            code,
+            value,
+        };
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                &event as *const InputEventRaw as *const u8,
+                size_of::<InputEventRaw>(),
+            )
+        };
+        self.file.write_all(bytes)
+    }
+
+    fn sync(&mut self) -> io::Result<()> {
+        self.emit(EV_SYN, SYN_REPORT, 0)
+    }
+
+    fn ioctl_none(&self, request: libc::c_ulong) -> io::Result<()> {
+        let result = unsafe { libc::ioctl(self.file.as_raw_fd(), request) };
+        if result < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ioctl_int(&self, request: libc::c_ulong, value: u16) -> io::Result<()> {
+        let result = unsafe { libc::ioctl(self.file.as_raw_fd(), request, value as libc::c_int) };
+        if result < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ioctl_ref<T>(&self, request: libc::c_ulong, value: &T) -> io::Result<()> {
+        let result = unsafe { libc::ioctl(self.file.as_raw_fd(), request, value as *const T) };
+        if result < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 }
 
-impl InputBackend {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::WaylandYdotool => "ydotool",
-            Self::X11Xdotool => "xdotool",
-        }
-    }
-
-    fn apply(self, event: InputEvent) -> io::Result<()> {
-        match self {
-            Self::X11Xdotool => self.apply_xdotool(event),
-            Self::WaylandYdotool => self.apply_ydotool(event),
-        }
-    }
-
-    fn apply_xdotool(self, event: InputEvent) -> io::Result<()> {
-        match event {
-            InputEvent::MouseEnter { x, y } => linux::run_status(
-                "xdotool",
-                ["mousemove".to_string(), x.to_string(), y.to_string()],
-            ),
-            InputEvent::MouseLeave => Ok(()),
-            InputEvent::MouseDelta { dx, dy } => linux::run_status(
-                "xdotool",
-                ["mousemove_relative".to_string(), "--".to_string(), dx.to_string(), dy.to_string()],
-            ),
-            InputEvent::MouseButton { button, down } => {
-                let button = xdotool_button(button).to_string();
-                let action = if down { "mousedown" } else { "mouseup" }.to_string();
-                linux::run_status("xdotool", [action, button])
-            }
-            InputEvent::MouseWheel {
-                horizontal,
-                vertical,
-            } => {
-                click_repeated_xdotool(if vertical > 0 { 4 } else { 5 }, vertical.unsigned_abs())?;
-                click_repeated_xdotool(if horizontal > 0 { 6 } else { 7 }, horizontal.unsigned_abs())
-            }
-            InputEvent::Key { scancode, state } => {
-                let Some(key) = scancode_to_xdotool_key(scancode) else {
-                    return Ok(());
-                };
-                let action = match state {
-                    KeyState::Down => "keydown",
-                    KeyState::Up => "keyup",
-                    KeyState::Repeat => "key",
-                }
-                .to_string();
-                linux::run_status("xdotool", [action, key.to_string()])
-            }
-        }
-    }
-
-    fn apply_ydotool(self, event: InputEvent) -> io::Result<()> {
-        match event {
-            InputEvent::MouseEnter { x, y } => linux::run_status(
-                "ydotool",
-                ["mousemove".to_string(), "-a".to_string(), x.to_string(), y.to_string()],
-            ),
-            InputEvent::MouseLeave => Ok(()),
-            InputEvent::MouseDelta { dx, dy } => linux::run_status(
-                "ydotool",
-                ["mousemove".to_string(), dx.to_string(), dy.to_string()],
-            ),
-            InputEvent::MouseButton { button, down } => {
-                let code = ydotool_button(button, down).to_string();
-                linux::run_status("ydotool", ["click".to_string(), code])
-            }
-            InputEvent::MouseWheel {
-                horizontal,
-                vertical,
-            } => {
-                click_repeated_ydotool(if vertical > 0 { "0xC4" } else { "0xC5" }, vertical.unsigned_abs())?;
-                click_repeated_ydotool(if horizontal > 0 { "0xC6" } else { "0xC7" }, horizontal.unsigned_abs())
-            }
-            InputEvent::Key { scancode, state } => {
-                let state_suffix = match state {
-                    KeyState::Down => 1,
-                    KeyState::Up => 0,
-                    KeyState::Repeat => 1,
-                };
-                linux::run_status(
-                    "ydotool",
-                    ["key".to_string(), format!("{scancode}:{state_suffix}")],
-                )?;
-                if state == KeyState::Repeat {
-                    linux::run_status("ydotool", ["key".to_string(), format!("{scancode}:0")])?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    fn screen_size(self) -> (u32, u32) {
-        match self {
-            Self::X11Xdotool => x11_screen_size().unwrap_or_else(fallback_screen_size),
-            Self::WaylandYdotool => wayland_screen_size().unwrap_or_else(fallback_screen_size),
+impl Drop for NativeUinput {
+    fn drop(&mut self) {
+        if self.created {
+            let _ = self.ioctl_none(UI_DEV_DESTROY);
         }
     }
 }
 
-fn click_repeated_xdotool(button: u8, count: u16) -> io::Result<()> {
-    for _ in 0..count.min(16) {
-        linux::run_status("xdotool", ["click".to_string(), button.to_string()])?;
-    }
-    Ok(())
+#[repr(C)]
+struct InputId {
+    bustype: u16,
+    vendor: u16,
+    product: u16,
+    version: u16,
 }
 
-fn click_repeated_ydotool(button: &str, count: u16) -> io::Result<()> {
-    for _ in 0..count.min(16) {
-        linux::run_status("ydotool", ["click".to_string(), button.to_string()])?;
-    }
-    Ok(())
+#[repr(C)]
+struct UinputSetup {
+    id: InputId,
+    name: [libc::c_char; UINPUT_MAX_NAME_SIZE],
+    ff_effects_max: u32,
 }
 
-fn xdotool_button(button: MouseButton) -> u8 {
+#[repr(C)]
+struct InputAbsInfo {
+    value: i32,
+    minimum: i32,
+    maximum: i32,
+    fuzz: i32,
+    flat: i32,
+    resolution: i32,
+}
+
+#[repr(C)]
+struct UinputAbsSetup {
+    code: u16,
+    absinfo: InputAbsInfo,
+}
+
+#[repr(C)]
+struct InputEventRaw {
+    time: libc::timeval,
+    event_type: u16,
+    code: u16,
+    value: i32,
+}
+
+const fn ioc(dir: u64, kind: u8, nr: u8, size: u64) -> libc::c_ulong {
+    ((dir << IOC_DIRSHIFT)
+        | ((kind as u64) << IOC_TYPESHIFT)
+        | ((nr as u64) << IOC_NRSHIFT)
+        | (size << IOC_SIZESHIFT)) as libc::c_ulong
+}
+
+const fn iow<T>(kind: u8, nr: u8) -> libc::c_ulong {
+    ioc(IOC_WRITE, kind, nr, size_of::<T>() as u64)
+}
+
+fn write_c_name(target: &mut [libc::c_char; UINPUT_MAX_NAME_SIZE], name: &str) {
+    for (index, byte) in name.bytes().take(UINPUT_MAX_NAME_SIZE - 1).enumerate() {
+        target[index] = byte as libc::c_char;
+    }
+}
+
+fn mouse_button_code(button: MouseButton) -> u16 {
     match button {
-        MouseButton::Left => 1,
-        MouseButton::Middle => 2,
-        MouseButton::Right => 3,
-        MouseButton::Extra(id) => id,
+        MouseButton::Left => BTN_LEFT,
+        MouseButton::Middle => BTN_MIDDLE,
+        MouseButton::Right => BTN_RIGHT,
+        MouseButton::Extra(4) => BTN_BACK,
+        MouseButton::Extra(5) => BTN_FORWARD,
+        MouseButton::Extra(6) => BTN_SIDE,
+        MouseButton::Extra(_) => BTN_EXTRA,
     }
 }
 
-fn ydotool_button(button: MouseButton, down: bool) -> &'static str {
-    match (button, down) {
-        (MouseButton::Left, true) => "0x40",
-        (MouseButton::Left, false) => "0x80",
-        (MouseButton::Middle, true) => "0x41",
-        (MouseButton::Middle, false) => "0x81",
-        (MouseButton::Right, true) => "0x42",
-        (MouseButton::Right, false) => "0x82",
-        (MouseButton::Extra(_), true) => "0x43",
-        (MouseButton::Extra(_), false) => "0x83",
+fn scancode_to_linux_key(scancode: u16) -> Option<u16> {
+    Some(match scancode {
+        284 => KEY_KPENTER,
+        285 => KEY_RIGHTCTRL,
+        312 => KEY_RIGHTALT,
+        327 => KEY_HOME,
+        328 => KEY_UP,
+        329 => KEY_PAGEUP,
+        331 => KEY_LEFT,
+        333 => KEY_RIGHT,
+        335 => KEY_END,
+        336 => KEY_DOWN,
+        337 => KEY_PAGEDOWN,
+        338 => KEY_INSERT,
+        339 => KEY_DELETE,
+        347 => KEY_LEFTMETA,
+        code @ KEY_ESC..=KEY_MAX_COMMON => code,
+        code if code >= 256 && code - 256 <= KEY_MAX_COMMON => code - 256,
+        _ => return None,
+    })
+}
+
+fn wheel_steps(value: i16) -> i32 {
+    let value = value as i32;
+    if value == 0 {
+        return 0;
     }
+    let sign = value.signum();
+    let magnitude = value.unsigned_abs().max(1);
+    sign * (magnitude.div_ceil(120).max(1) as i32)
+}
+
+fn clamp_point(x: i32, y: i32, screen_size: (u32, u32)) -> (i32, i32) {
+    let max_x = screen_size.0.saturating_sub(1).max(1) as i32;
+    let max_y = screen_size.1.saturating_sub(1).max(1) as i32;
+    (x.clamp(0, max_x), y.clamp(0, max_y))
+}
+
+fn detect_screen_size(display: DisplayServer) -> (u32, u32) {
+    if let Some(size) = screen_size_from_env() {
+        eprintln!("linux screen size override: {}x{}", size.0, size.1);
+        return size;
+    }
+
+    let detected = match display {
+        DisplayServer::Wayland => wayland_screen_size().or_else(x11_screen_size),
+        DisplayServer::X11 => x11_screen_size().or_else(wayland_screen_size),
+        DisplayServer::Unknown => wayland_screen_size().or_else(x11_screen_size),
+    };
+    detected.unwrap_or_else(|| {
+        let fallback = fallback_screen_size();
+        eprintln!(
+            "linux screen size detection failed; using fallback {}x{}. Set DESKBRIDGE_SCREEN_SIZE=WIDTHxHEIGHT to override.",
+            fallback.0, fallback.1
+        );
+        fallback
+    })
+}
+
+fn screen_size_from_env() -> Option<(u32, u32)> {
+    std::env::var("DESKBRIDGE_SCREEN_SIZE")
+        .ok()
+        .or_else(|| std::env::var("DESKBRIDGE_LINUX_SCREEN_SIZE").ok())
+        .and_then(|value| parse_size_token(&value))
 }
 
 fn x11_screen_size() -> Option<(u32, u32)> {
-    let output = linux::run_output("xdotool", ["getdisplaygeometry"]).ok()?;
-    let text = String::from_utf8_lossy(&output);
-    let mut parts = text.split_whitespace().filter_map(|value| value.parse::<u32>().ok());
-    Some((parts.next()?.max(1), parts.next()?.max(1)))
+    xrandr_current_size()
+        .or_else(xrandr_monitor_size)
+        .or_else(xdpyinfo_screen_size)
+}
+
+fn xrandr_current_size() -> Option<(u32, u32)> {
+    if !linux::command_exists("xrandr") {
+        return None;
+    }
+    let output = linux::run_output("xrandr", ["--current"]).ok()?;
+    parse_xrandr_current(&String::from_utf8_lossy(&output))
+}
+
+fn xrandr_monitor_size() -> Option<(u32, u32)> {
+    if !linux::command_exists("xrandr") {
+        return None;
+    }
+    let output = linux::run_output("xrandr", ["--listmonitors"]).ok()?;
+    parse_xrandr_monitor_list(&String::from_utf8_lossy(&output))
+}
+
+fn xdpyinfo_screen_size() -> Option<(u32, u32)> {
+    if !linux::command_exists("xdpyinfo") {
+        return None;
+    }
+    let output = linux::run_output("xdpyinfo", std::iter::empty::<&str>()).ok()?;
+    parse_xdpyinfo_dimensions(&String::from_utf8_lossy(&output))
 }
 
 fn wayland_screen_size() -> Option<(u32, u32)> {
-    if linux::command_exists("wlr-randr") {
-        let output = linux::run_output("wlr-randr", std::iter::empty::<&str>()).ok()?;
-        let text = String::from_utf8_lossy(&output);
-        for token in text.split_whitespace() {
-            if let Some((width, height)) = token.split_once('x') {
-                if let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>()) {
-                    return Some((width.max(1), height.max(1)));
+    wlr_randr_screen_size().or_else(wayland_xwayland_screen_size)
+}
+
+fn wlr_randr_screen_size() -> Option<(u32, u32)> {
+    if !linux::command_exists("wlr-randr") {
+        return None;
+    }
+    let output = linux::run_output("wlr-randr", std::iter::empty::<&str>()).ok()?;
+    parse_wlr_randr(&String::from_utf8_lossy(&output))
+}
+
+fn wayland_xwayland_screen_size() -> Option<(u32, u32)> {
+    if std::env::var_os("DISPLAY").is_some() {
+        x11_screen_size()
+    } else {
+        None
+    }
+}
+
+fn parse_xrandr_current(text: &str) -> Option<(u32, u32)> {
+    for line in text.lines() {
+        let Some((_, after_current)) = line.split_once("current") else {
+            continue;
+        };
+        let tokens = clean_tokens(after_current);
+        for window in tokens.windows(3) {
+            if window[1] == "x" {
+                if let (Ok(width), Ok(height)) =
+                    (window[0].parse::<u32>(), window[2].parse::<u32>())
+                {
+                    return Some(valid_screen_size(width, height));
                 }
             }
         }
@@ -227,93 +607,119 @@ fn wayland_screen_size() -> Option<(u32, u32)> {
     None
 }
 
+fn parse_xrandr_monitor_list(text: &str) -> Option<(u32, u32)> {
+    let mut max_right = 0u32;
+    let mut max_bottom = 0u32;
+    for line in text.lines().filter(|line| line.contains(':')) {
+        for token in line.split_whitespace() {
+            if let Some((width, height, x, y)) = parse_xrandr_monitor_geometry(token) {
+                max_right = max_right.max(x.saturating_add(width));
+                max_bottom = max_bottom.max(y.saturating_add(height));
+            }
+        }
+    }
+    if max_right != 0 && max_bottom != 0 {
+        Some(valid_screen_size(max_right, max_bottom))
+    } else {
+        None
+    }
+}
+
+fn parse_xrandr_monitor_geometry(token: &str) -> Option<(u32, u32, u32, u32)> {
+    let token = token.trim_start_matches(['+', '*']);
+    let (width_part, rest) = token.split_once('x')?;
+    let width = width_part.split('/').next()?.parse::<u32>().ok()?;
+    let mut parts = rest.split('+');
+    let height = parts.next()?.split('/').next()?.parse::<u32>().ok()?;
+    let x = parts.next()?.parse::<u32>().ok()?;
+    let y = parts.next()?.parse::<u32>().ok()?;
+    Some((width, height, x, y))
+}
+
+fn parse_xdpyinfo_dimensions(text: &str) -> Option<(u32, u32)> {
+    for line in text.lines() {
+        if !line.contains("dimensions:") {
+            continue;
+        }
+        for token in line.split_whitespace() {
+            if let Some(size) = parse_size_token(token) {
+                return Some(size);
+            }
+        }
+    }
+    None
+}
+
+fn parse_wlr_randr(text: &str) -> Option<(u32, u32)> {
+    let mut max_size = None;
+    for line in text.lines() {
+        if !line.contains("current") && !line.contains("preferred") {
+            continue;
+        }
+        for token in line.split_whitespace() {
+            if let Some(size) = parse_size_token(token) {
+                max_size = Some(match max_size {
+                    Some((width, height))
+                        if width.saturating_mul(height) >= size.0.saturating_mul(size.1) =>
+                    {
+                        (width, height)
+                    }
+                    _ => size,
+                });
+            }
+        }
+    }
+    max_size
+}
+
+fn parse_size_token(token: &str) -> Option<(u32, u32)> {
+    let token = token
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != 'x' && ch != 'X')
+        .trim_end_matches("px");
+    let (width, height) = token.split_once(['x', 'X'])?;
+    let width = width.parse::<u32>().ok()?;
+    let height = height.parse::<u32>().ok()?;
+    Some(valid_screen_size(width, height))
+}
+
+fn clean_tokens(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|ch: char| ch == ',' || ch == ';')
+                .to_string()
+        })
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn valid_screen_size(width: u32, height: u32) -> (u32, u32) {
+    (width.max(1), height.max(1))
+}
+
 fn fallback_screen_size() -> (u32, u32) {
     (1920, 1080)
 }
 
-fn scancode_to_xdotool_key(scancode: u16) -> Option<&'static str> {
-    Some(match scancode {
-        1 => "Escape",
-        2 => "1",
-        3 => "2",
-        4 => "3",
-        5 => "4",
-        6 => "5",
-        7 => "6",
-        8 => "7",
-        9 => "8",
-        10 => "9",
-        11 => "0",
-        12 => "minus",
-        13 => "equal",
-        14 => "BackSpace",
-        15 => "Tab",
-        16 => "q",
-        17 => "w",
-        18 => "e",
-        19 => "r",
-        20 => "t",
-        21 => "y",
-        22 => "u",
-        23 => "i",
-        24 => "o",
-        25 => "p",
-        26 => "bracketleft",
-        27 => "bracketright",
-        28 => "Return",
-        29 => "Control_L",
-        30 => "a",
-        31 => "s",
-        32 => "d",
-        33 => "f",
-        34 => "g",
-        35 => "h",
-        36 => "j",
-        37 => "k",
-        38 => "l",
-        39 => "semicolon",
-        40 => "apostrophe",
-        41 => "grave",
-        42 => "Shift_L",
-        43 => "backslash",
-        44 => "z",
-        45 => "x",
-        46 => "c",
-        47 => "v",
-        48 => "b",
-        49 => "n",
-        50 => "m",
-        51 => "comma",
-        52 => "period",
-        53 => "slash",
-        54 => "Shift_R",
-        56 => "Alt_L",
-        57 => "space",
-        58 => "Caps_Lock",
-        59 => "F1",
-        60 => "F2",
-        61 => "F3",
-        62 => "F4",
-        63 => "F5",
-        64 => "F6",
-        65 => "F7",
-        66 => "F8",
-        67 => "F9",
-        68 => "F10",
-        87 => "F11",
-        88 => "F12",
-        96 => "KP_Enter",
-        97 => "Control_R",
-        100 => "Alt_R",
-        103 => "Up",
-        105 => "Left",
-        106 => "Right",
-        108 => "Down",
-        110 => "Insert",
-        111 => "Delete",
-        119 => "Pause",
-        125 => "Super_L",
-        126 => "Super_R",
-        _ => return None,
-    })
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_common_windows_extended_keys() {
+        assert_eq!(scancode_to_linux_key(328), Some(KEY_UP));
+        assert_eq!(scancode_to_linux_key(331), Some(KEY_LEFT));
+        assert_eq!(scancode_to_linux_key(333), Some(KEY_RIGHT));
+        assert_eq!(scancode_to_linux_key(336), Some(KEY_DOWN));
+        assert_eq!(scancode_to_linux_key(347), Some(KEY_LEFTMETA));
+    }
+
+    #[test]
+    fn converts_wheel_pixels_to_detents() {
+        assert_eq!(wheel_steps(0), 0);
+        assert_eq!(wheel_steps(1), 1);
+        assert_eq!(wheel_steps(120), 1);
+        assert_eq!(wheel_steps(240), 2);
+        assert_eq!(wheel_steps(-120), -1);
+    }
 }

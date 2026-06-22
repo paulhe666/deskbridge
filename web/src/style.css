@@ -153,6 +153,18 @@ label.wide {
   grid-column: 1 / -1;
 }
 
+.config-path-field input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.settings-hint {
+  margin: -4px 0 4px;
+  color: #7b8da8;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 input,
 select {
   width: 100%;

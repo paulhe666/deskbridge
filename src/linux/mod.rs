@@ -11,6 +11,24 @@ pub enum DisplayServer {
     Unknown,
 }
 
+pub fn prepare_gui_environment() {
+    set_env_if_missing("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    set_env_if_missing("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+
+    if env_flag_enabled("DESKBRIDGE_LINUX_SOFTWARE_RENDERING") {
+        set_env_if_missing("LIBGL_ALWAYS_SOFTWARE", "1");
+    }
+
+    match env::var("DESKBRIDGE_LINUX_GUI_BACKEND") {
+        Ok(value) if value.eq_ignore_ascii_case("x11") => set_env("GDK_BACKEND", "x11"),
+        Ok(value) if value.eq_ignore_ascii_case("wayland") => set_env("GDK_BACKEND", "wayland"),
+        _ if env_flag_enabled("DESKBRIDGE_LINUX_PREFER_X11") => {
+            set_env_if_missing("GDK_BACKEND", "x11")
+        }
+        _ => {}
+    }
+}
+
 impl DisplayServer {
     pub fn detect() -> Self {
         if matches_env("DESKBRIDGE_LINUX_SESSION", "wayland") {
@@ -144,4 +162,27 @@ fn matches_env(key: &str, expected: &str) -> bool {
     env::var(key)
         .map(|value| value.eq_ignore_ascii_case(expected))
         .unwrap_or(false)
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    env::var(key)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn set_env_if_missing(key: &str, value: &str) {
+    if env::var_os(key).is_none() {
+        set_env(key, value);
+    }
+}
+
+fn set_env(key: &str, value: &str) {
+    unsafe {
+        env::set_var(key, value);
+    }
 }

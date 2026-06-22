@@ -171,7 +171,10 @@ impl KeyboardRouter {
             let Some(scancode) = key_target_scancode(self.mapping.caps_lock) else {
                 return Vec::new();
             };
-            return vec![key_event(scancode, KeyState::Down), key_event(scancode, KeyState::Up)];
+            return vec![
+                key_event(scancode, KeyState::Down),
+                key_event(scancode, KeyState::Up),
+            ];
         }
         let Some(group) = modifier_group(mac_keycode) else {
             return Vec::new();

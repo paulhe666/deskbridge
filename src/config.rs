@@ -319,13 +319,191 @@ impl KeyTarget {
 }
 
 pub fn config_path() -> PathBuf {
-    config_dir().join("config.ini")
+    std::env::var_os("DESKBRIDGE_CONFIG_PATH")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("DESKBRIDGE_CONFIG_DIR")
+                .map(|dir| PathBuf::from(dir).join("config.ini"))
+        })
+        .or_else(load_config_path_override)
+        .unwrap_or_else(default_config_path)
 }
 
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("DESKBRIDGE_CONFIG_DIR")
+    config_path()
+        .parent()
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".deskbridge"))
+        .unwrap_or_else(user_config_dir)
+}
+
+pub fn default_config_path() -> PathBuf {
+    let portable = portable_config_path();
+    if is_config_location_writable(&portable) {
+        portable
+    } else {
+        user_config_path()
+    }
+}
+
+pub fn portable_config_path() -> PathBuf {
+    program_dir().join("config.ini")
+}
+
+pub fn user_config_path() -> PathBuf {
+    user_config_dir().join("config.ini")
+}
+
+pub fn config_path_override_file() -> PathBuf {
+    user_config_dir().join("deskbridge-config-path.txt")
+}
+
+pub fn legacy_config_path_override_file() -> PathBuf {
+    program_dir().join("deskbridge-config-path.txt")
+}
+
+pub fn set_config_path_override(value: &str) -> std::io::Result<PathBuf> {
+    let path = normalize_config_path_input(value);
+    ensure_config_location_writable(&path)?;
+
+    let default_path = default_config_path();
+    let override_file = config_path_override_file();
+    if same_path_text(&path, &default_path) {
+        remove_file_if_exists(&override_file)?;
+        remove_file_if_exists(&legacy_config_path_override_file())?;
+    } else {
+        if let Some(parent) = override_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&override_file, path.to_string_lossy().as_ref())?;
+    }
+    Ok(path)
+}
+
+fn load_config_path_override() -> Option<PathBuf> {
+    read_config_path_override(config_path_override_file())
+        .or_else(|| read_config_path_override(legacy_config_path_override_file()))
+}
+
+fn read_config_path_override(path: PathBuf) -> Option<PathBuf> {
+    let text = fs::read_to_string(path).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(normalize_config_path_input(trimmed))
+    }
+}
+
+fn normalize_config_path_input(value: &str) -> PathBuf {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return default_config_path();
+    }
+    let path = PathBuf::from(trimmed);
+    if path
+        .extension()
+        .map(|ext| ext.eq_ignore_ascii_case("ini"))
+        .unwrap_or(false)
+    {
+        path
+    } else {
+        path.join("config.ini")
+    }
+}
+
+fn ensure_config_location_writable(path: &std::path::Path) -> std::io::Result<()> {
+    if is_config_location_writable(path) {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("config location is not writable: {}", path.display()),
+        ))
+    }
+}
+
+fn is_config_location_writable(path: &std::path::Path) -> bool {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    if fs::create_dir_all(parent).is_err() {
+        return false;
+    }
+    if path.exists() {
+        return fs::OpenOptions::new().append(true).open(path).is_ok();
+    }
+    is_dir_writable(parent)
+}
+
+fn is_dir_writable(dir: &std::path::Path) -> bool {
+    let test_path = dir.join(format!(
+        ".deskbridge-write-test-{}-{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    ));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&test_path)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(test_path);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn chrono_like_timestamp() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+fn remove_file_if_exists(path: &std::path::Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn same_path_text(left: &std::path::Path, right: &std::path::Path) -> bool {
+    left.to_string_lossy() == right.to_string_lossy()
+}
+
+fn program_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn user_config_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home_dir()
+            .join("Library")
+            .join("Application Support")
+            .join("Deskbridge")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir().join("AppData").join("Roaming"))
+            .join("Deskbridge")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir().join(".config"))
+            .join("deskbridge")
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        home_dir().join(".deskbridge")
+    }
 }
 
 fn home_dir() -> PathBuf {

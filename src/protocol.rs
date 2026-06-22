@@ -5,6 +5,7 @@ use crate::platform::Platform;
 
 pub const VERSION: u16 = 3;
 pub const CHUNK_SIZE: usize = 16 * 1024;
+pub const MAX_FRAME_PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -94,12 +95,20 @@ pub struct Hello {
 pub fn read_frame(reader: &mut impl Read) -> std::io::Result<Frame> {
     let mut kind = [0u8; 1];
     reader.read_exact(&mut kind)?;
+    let kind = FrameKind::from_byte(kind[0])?;
+
     let mut len = [0u8; 8];
     reader.read_exact(&mut len)?;
-    let len = u64::from_be_bytes(len) as usize;
-    let mut payload = vec![0u8; len];
+    let len = u64::from_be_bytes(len);
+    if len > MAX_FRAME_PAYLOAD_SIZE as u64 {
+        return Err(invalid_owned(format!(
+            "frame payload too large: {len} bytes exceeds limit of {MAX_FRAME_PAYLOAD_SIZE} bytes"
+        )));
+    }
+
+    let mut payload = vec![0u8; len as usize];
     reader.read_exact(&mut payload)?;
-    Ok(Frame::new(FrameKind::from_byte(kind[0])?, payload))
+    Ok(Frame::new(kind, payload))
 }
 
 pub fn write_frame(writer: &mut impl Write, frame: &Frame) -> std::io::Result<()> {
@@ -422,5 +431,21 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn read_frame_rejects_unknown_kind_before_allocating() {
+        let bytes = [255u8, 0, 0, 0, 0, 0, 0, 0, 4, b't', b'e', b's', b't'];
+        let err = read_frame(&mut std::io::Cursor::new(bytes)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn read_frame_rejects_oversized_payload_before_allocating() {
+        let mut bytes = vec![FrameKind::Hello as u8];
+        bytes.extend_from_slice(&((MAX_FRAME_PAYLOAD_SIZE as u64) + 1).to_be_bytes());
+        let err = read_frame(&mut std::io::Cursor::new(bytes)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("frame payload too large"));
     }
 }
