@@ -2,14 +2,18 @@
 mod macos;
 #[cfg(target_os = "macos")]
 mod macos_capture;
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod unsupported;
 #[cfg(windows)]
 mod windows;
 
 #[cfg(target_os = "macos")]
 pub use macos::run;
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub use linux::run;
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub use unsupported::run;
 #[cfg(windows)]
 pub use windows::run;

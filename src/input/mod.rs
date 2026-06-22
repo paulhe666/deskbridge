@@ -1,6 +1,8 @@
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod unsupported;
 #[cfg(windows)]
 mod windows;
@@ -9,9 +11,13 @@ mod windows;
 pub use macos::InputSink;
 #[cfg(target_os = "macos")]
 pub use macos::screen_size;
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+pub use linux::InputSink;
+#[cfg(target_os = "linux")]
+pub use linux::screen_size;
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub use unsupported::InputSink;
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub use unsupported::screen_size;
 #[cfg(windows)]
 pub use windows::InputSink;

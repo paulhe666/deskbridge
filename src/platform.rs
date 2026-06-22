@@ -4,6 +4,7 @@ pub enum Platform {
     Unknown = 0,
     Windows = 1,
     MacOS = 2,
+    Linux = 3,
 }
 
 impl Platform {
@@ -16,7 +17,11 @@ impl Platform {
         {
             Self::MacOS
         }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        {
+            Self::Linux
+        }
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {
             Self::Unknown
         }
@@ -26,6 +31,7 @@ impl Platform {
         match value {
             1 => Self::Windows,
             2 => Self::MacOS,
+            3 => Self::Linux,
             _ => Self::Unknown,
         }
     }
@@ -38,6 +44,7 @@ impl Platform {
         match self {
             Self::Windows => "windows",
             Self::MacOS => "macos",
+            Self::Linux => "linux",
             Self::Unknown => "unknown",
         }
     }
@@ -47,8 +54,13 @@ impl Platform {
 pub enum ConnectionProfile {
     WindowsToWindows,
     WindowsToMacOS,
+    WindowsToLinux,
     MacOSToWindows,
     MacOSToMacOS,
+    MacOSToLinux,
+    LinuxToWindows,
+    LinuxToMacOS,
+    LinuxToLinux,
     Unknown,
 }
 
@@ -57,8 +69,13 @@ impl ConnectionProfile {
         match (server, client) {
             (Platform::Windows, Platform::Windows) => Self::WindowsToWindows,
             (Platform::Windows, Platform::MacOS) => Self::WindowsToMacOS,
+            (Platform::Windows, Platform::Linux) => Self::WindowsToLinux,
             (Platform::MacOS, Platform::Windows) => Self::MacOSToWindows,
             (Platform::MacOS, Platform::MacOS) => Self::MacOSToMacOS,
+            (Platform::MacOS, Platform::Linux) => Self::MacOSToLinux,
+            (Platform::Linux, Platform::Windows) => Self::LinuxToWindows,
+            (Platform::Linux, Platform::MacOS) => Self::LinuxToMacOS,
+            (Platform::Linux, Platform::Linux) => Self::LinuxToLinux,
             _ => Self::Unknown,
         }
     }
@@ -75,13 +92,21 @@ impl ConnectionProfile {
         match self {
             Self::WindowsToWindows => "windows-to-windows",
             Self::WindowsToMacOS => "windows-to-macos",
+            Self::WindowsToLinux => "windows-to-linux",
             Self::MacOSToWindows => "macos-to-windows",
             Self::MacOSToMacOS => "macos-to-macos",
+            Self::MacOSToLinux => "macos-to-linux",
+            Self::LinuxToWindows => "linux-to-windows",
+            Self::LinuxToMacOS => "linux-to-macos",
+            Self::LinuxToLinux => "linux-to-linux",
             Self::Unknown => "unknown",
         }
     }
 
     pub fn is_same_platform(self) -> bool {
-        matches!(self, Self::WindowsToWindows | Self::MacOSToMacOS)
+        matches!(
+            self,
+            Self::WindowsToWindows | Self::MacOSToMacOS | Self::LinuxToLinux
+        )
     }
 }

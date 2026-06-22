@@ -21,7 +21,9 @@ if [ ! -x "$TAURI_CLI" ]; then
   exit 1
 fi
 
-"$TAURI_CLI" build --bundles app
+npm --prefix "$ROOT/web" run build
+
+"$TAURI_CLI" build --bundles app --config '{"build":{"beforeBuildCommand":""}}'
 
 if [ ! -d "$TAURI_APP" ]; then
   echo "Tauri did not create expected app bundle: $TAURI_APP" >&2

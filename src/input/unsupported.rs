@@ -1,9 +1,10 @@
+use crate::platform::ConnectionProfile;
 use crate::protocol::InputEvent;
 
 pub struct InputSink;
 
 impl InputSink {
-    pub fn new() -> std::io::Result<Self> {
+    pub fn new(_profile: ConnectionProfile) -> std::io::Result<Self> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "input injection is not supported on this platform",

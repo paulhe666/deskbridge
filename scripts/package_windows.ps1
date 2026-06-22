@@ -11,7 +11,18 @@ if (Test-Path (Join-Path $Root "web\package.json")) {
     npm run build
     Pop-Location
 }
+
+$FrontendIndex = Join-Path $Root "web\dist\index.html"
+if (-not (Test-Path $FrontendIndex)) {
+    throw "Missing web\dist\index.html. Windows production builds must include the built frontend assets."
+}
+
 cargo build --release
+
+$ReleaseExe = Join-Path $Root "target\release\deskbridge.exe"
+if (-not (Test-Path $ReleaseExe)) {
+    throw "Missing target\release\deskbridge.exe after cargo build."
+}
 
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 

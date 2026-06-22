@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -21,7 +21,7 @@ import {
 import brandIconUrl from '../../assets/deskbridge5-transparent-flat.png';
 import './style.css';
 
-const APP_VERSION = 'v1.5.10';
+const APP_VERSION = 'v1.6.5';
 const BRAND_ICON_DATA = 'data:image/webp;base64,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';
 const AUTHOR = 'paulhe666';
 const REPO_URL = 'https://github.com/paulhe666/deskbridge';
@@ -72,6 +72,11 @@ const copy = {
     start: 'Start',
     stop: 'Stop',
     save: 'Save',
+    saving: 'Saving',
+    saved: 'Saved',
+    saveFailed: 'Save failed',
+    keyboardScopeTitle: 'Server-side only',
+    keyboardScopeText: 'Keyboard mappings only affect the computer running Deskbridge as the server. Changing them on a client does not take effect.',
     refresh: 'Refresh',
     clear: 'Clear',
     noLogs: 'No logs yet.',
@@ -114,6 +119,11 @@ const copy = {
     start: '启动',
     stop: '停止',
     save: '保存',
+    saving: '保存中',
+    saved: '已保存',
+    saveFailed: '保存失败',
+    keyboardScopeTitle: '仅服务端生效',
+    keyboardScopeText: '键盘映射只作用于运行 Deskbridge 服务端的电脑；在客户端修改不会生效。',
     refresh: '刷新',
     clear: '清空',
     noLogs: '暂无日志。',
@@ -146,34 +156,58 @@ function App() {
   const [config, setConfig] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [saveNotice, setSaveNotice] = useState('');
+  const configDirtyRef = useRef(false);
+  const configEditingRef = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('keyboard');
   const [updateInfo, setUpdateInfo] = useState(null);
   const [updateBusy, setUpdateBusy] = useState(false);
 
-  async function command(name, args = {}) {
+  async function command(name, args = {}, options = {}) {
+    const { preserveLocalConfig = false } = options;
     setError('');
     const payload = await invoke(name, args);
     setState(payload);
-    setConfig(payload.config);
+    if (payload.config && !(preserveLocalConfig && (configDirtyRef.current || configEditingRef.current))) {
+      setConfig(payload.config);
+    }
     return payload;
   }
 
   async function refresh() {
     try {
-      await command('get_state');
+      await command('get_state', {}, { preserveLocalConfig: true });
     } catch (err) {
       setError(String(err));
     }
   }
 
+  async function persistConfig(nextConfig = config) {
+    if (!nextConfig) return false;
+    setSaveNotice('saving');
+    const payload = await invoke('save_config', { config: nextConfig });
+    setState(payload);
+    if (payload.config) {
+      setConfig(payload.config);
+    }
+    configDirtyRef.current = false;
+    configEditingRef.current = false;
+    setSaveNotice('saved');
+    window.setTimeout(() => setSaveNotice(''), 1800);
+    return true;
+  }
+
   async function save(nextConfig = config) {
-    if (!nextConfig) return;
     setBusy(true);
+    setError('');
     try {
-      await command('save_config', { config: nextConfig });
+      await persistConfig(nextConfig);
+      return true;
     } catch (err) {
       setError(String(err));
+      setSaveNotice('error');
+      return false;
     } finally {
       setBusy(false);
     }
@@ -181,8 +215,17 @@ function App() {
 
   async function action(name) {
     setBusy(true);
+    setError('');
     try {
-      await command(name);
+      if (name === 'start_service' && config && (configDirtyRef.current || configEditingRef.current)) {
+        try {
+          await persistConfig(config);
+        } catch (err) {
+          setSaveNotice('error');
+          throw err;
+        }
+      }
+      await command(name, {}, { preserveLocalConfig: name === 'start_service' });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -237,7 +280,12 @@ function App() {
   }, [state, running, t]);
 
   function patchConfig(patch) {
+    configDirtyRef.current = true;
     setConfig((current) => ({ ...current, ...patch }));
+  }
+
+  function markConfigEditing(editing) {
+    configEditingRef.current = editing;
   }
 
   function patchAndSave(patch) {
@@ -274,7 +322,7 @@ function App() {
       {error && <div className="error-banner">{error}</div>}
 
       <section className="grid-layout">
-        <Panel title={t.connection} icon={<Wifi size={18} />}>
+        <Panel className="connection-panel" title={t.connection} icon={<Wifi size={18} />}>
           {!config ? (
             <Skeleton />
           ) : (
@@ -293,6 +341,8 @@ function App() {
                   <input
                     value={config.server}
                     placeholder="192.168.1.10:24920"
+                    onFocus={() => markConfigEditing(true)}
+                    onBlur={() => markConfigEditing(false)}
                     onChange={(event) => patchConfig({ server: event.target.value })}
                   />
                 </label>
@@ -303,6 +353,8 @@ function App() {
                     <input
                       value={config.bind}
                       placeholder="0.0.0.0:24920"
+                      onFocus={() => markConfigEditing(true)}
+                      onBlur={() => markConfigEditing(false)}
                       onChange={(event) => patchConfig({ bind: event.target.value })}
                     />
                   </label>
@@ -327,25 +379,26 @@ function App() {
           )}
         </Panel>
 
-        <Panel title={t.runtime} icon={<MonitorCog size={18} />}>
+        <Panel className="runtime-panel" title={t.runtime} icon={<MonitorCog size={18} />}>
           <div className="command-card">
             <span>{t.commandPreview}</span>
             <code>{commandPreview}</code>
           </div>
           <div className="button-row">
-            <button className="primary" disabled={busy || running} onClick={() => action('start_service')}>
+            <button className="primary start-button" disabled={busy || running} onClick={() => action('start_service')}>
               <Play size={16} /> {t.start}
             </button>
-            <button disabled={busy || !running} onClick={() => action('stop_service')}>
+            <button className="danger stop-button" disabled={busy || !running} onClick={() => action('stop_service')}>
               <CircleStop size={16} /> {t.stop}
             </button>
-            <button disabled={busy} onClick={() => save()}>
+            <button className="secondary save-button" disabled={busy} onClick={() => save()}>
               <Save size={16} /> {t.save}
             </button>
-            <button disabled={busy} onClick={refresh}>
+            <button className="quiet refresh-button" disabled={busy} onClick={refresh}>
               <RefreshCw size={16} /> {t.refresh}
             </button>
           </div>
+          {saveNotice && <div className={`save-feedback ${saveNotice}`}>{formatSaveNotice(t, saveNotice)}</div>}
         </Panel>
 
 
@@ -367,6 +420,7 @@ function App() {
           patchConfig={patchConfig}
           patchAndSave={patchAndSave}
           save={save}
+          saveNotice={saveNotice}
           updateInfo={updateInfo}
           updateBusy={updateBusy}
           checkUpdates={checkUpdates}
@@ -378,7 +432,7 @@ function App() {
   );
 }
 
-function SettingsModal({ t, tab, setTab, config, patchConfig, patchAndSave, save, updateInfo, updateBusy, checkUpdates, openReleases, close }) {
+function SettingsModal({ t, tab, setTab, config, patchConfig, patchAndSave, save, saveNotice, updateInfo, updateBusy, checkUpdates, openReleases, close }) {
   return (
     <div className="modal-backdrop" onClick={close}>
       <section className="settings-modal" onClick={(event) => event.stopPropagation()}>
@@ -402,6 +456,10 @@ function SettingsModal({ t, tab, setTab, config, patchConfig, patchAndSave, save
         {tab === 'keyboard' ? (
           <div className="settings-body">
             <h3>{t.activeMappings}</h3>
+            <div className={`keyboard-scope-note ${config?.role === 'client' ? 'client-role' : ''}`}>
+              <strong>{t.keyboardScopeTitle}</strong>
+              <span>{t.keyboardScopeText}</span>
+            </div>
             {config ? (
               <>
                 <h3>{t.modifierMappings}</h3>
@@ -424,7 +482,12 @@ function SettingsModal({ t, tab, setTab, config, patchConfig, patchAndSave, save
                 </div>
               </>
             ) : <Skeleton />}
-            <button className="primary" onClick={() => save()}><Save size={16} /> {t.save}</button>
+            <div className="save-line">
+              <button className="primary" onClick={() => save()} disabled={saveNotice === 'saving'}>
+                <Save size={16} /> {saveNotice === 'saving' ? t.saving : t.save}
+              </button>
+              {saveNotice && <span className={`save-feedback ${saveNotice}`}>{formatSaveNotice(t, saveNotice)}</span>}
+            </div>
           </div>
         ) : (
           <div className="settings-body about-grid">
@@ -468,6 +531,13 @@ function SettingsModal({ t, tab, setTab, config, patchConfig, patchAndSave, save
       </section>
     </div>
   );
+}
+
+function formatSaveNotice(t, notice) {
+  if (notice === 'saving') return `${t.saving}...`;
+  if (notice === 'saved') return t.saved;
+  if (notice === 'error') return t.saveFailed;
+  return '';
 }
 
 function formatUpdateInfo(t, info) {

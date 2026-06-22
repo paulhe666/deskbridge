@@ -968,3 +968,750 @@ button,
     justify-content: flex-start;
   }
 }
+
+/* 1.5.11 drag-resize and edge-to-edge layout correction */
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  min-width: 0;
+}
+
+.app-shell {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 6px;
+  display: grid;
+  gap: 8px;
+}
+
+.hero-card,
+.panel,
+.settings-modal,
+.command-card,
+.logs-box,
+.form-grid > *,
+.grid-layout > * {
+  min-width: 0;
+}
+
+.hero-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-bottom: 0;
+  padding: 12px 14px;
+  border-radius: 20px;
+}
+
+.brand-row {
+  min-width: 0;
+}
+
+.brand-row h1 {
+  overflow-wrap: anywhere;
+}
+
+.hero-actions {
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.status-pill {
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.grid-layout {
+  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
+  gap: 8px;
+  margin-top: 0;
+  align-items: start;
+}
+
+.panel {
+  padding: 14px;
+  border-radius: 18px;
+}
+
+.panel header {
+  gap: 10px;
+}
+
+.logs-panel {
+  grid-column: 1 / -1;
+}
+
+.form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 10px;
+}
+
+.form-grid.compact,
+.key-map-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+}
+
+.command-card {
+  overflow: hidden;
+}
+
+.command-card code,
+code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.button-row {
+  width: 100%;
+}
+
+.button-row button {
+  flex: 1 1 118px;
+  min-width: min(100%, 112px);
+}
+
+.logs-box {
+  width: 100%;
+  min-height: 140px;
+  max-height: min(240px, 36vh);
+}
+
+.settings-modal {
+  width: min(720px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  padding: 16px;
+}
+
+.keyboard-scope-note {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid #facc15;
+  border-radius: 16px;
+  color: #854d0e;
+  background: #fffbeb;
+}
+
+.keyboard-scope-note strong {
+  color: #92400e;
+  font-size: 13px;
+}
+
+.keyboard-scope-note span {
+  color: #9a5b12;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.keyboard-scope-note.client-role {
+  border-color: #fb923c;
+  background: #fff7ed;
+}
+
+.save-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.save-feedback {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: #64748b;
+  background: #f1f5f9;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.save-feedback.saving {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.save-feedback.saved {
+  color: #047857;
+  background: #ecfdf5;
+}
+
+.save-feedback.error {
+  color: #be123c;
+  background: #fff1f2;
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    padding: 5px;
+  }
+
+  .hero-card {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .hero-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .status-pill {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 460px) {
+  .app-shell {
+    padding: 4px;
+    gap: 6px;
+  }
+
+  .hero-card,
+  .panel {
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .brand-row h1 {
+    font-size: 28px;
+  }
+
+  .app-mark.image-mark,
+  .brand-svg,
+  .brand-image {
+    width: 46px;
+    height: 46px;
+  }
+
+  .button-row button {
+    flex-basis: 100%;
+  }
+}
+
+/* 1.5.12 symmetric edge fit: remove right scrollbar gutter and make the shell hug both edges equally */
+html,
+body {
+  scrollbar-width: none;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+body {
+  overflow-y: auto;
+}
+
+.app-shell {
+  width: 100vw;
+  max-width: 100vw;
+  padding: 5px;
+  gap: 8px;
+  overflow-x: clip;
+}
+
+.hero-card,
+.panel {
+  width: 100%;
+}
+
+.grid-layout {
+  width: 100%;
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    padding: 4px;
+  }
+}
+
+/* 1.5.13 professional desktop console refinement.
+   Keep the 1.5.11/1.5.12 drag-resize fixes intact; only refine visual tokens and hierarchy. */
+:root {
+  color-scheme: light;
+  --db-bg: #f6f8fb;
+  --db-surface: #ffffff;
+  --db-surface-soft: #f8fafc;
+  --db-surface-muted: #eef3f8;
+  --db-text: #172236;
+  --db-text-strong: #101a2e;
+  --db-text-muted: #64748b;
+  --db-border: #d7e0eb;
+  --db-border-strong: #c7d3e1;
+  --db-primary: #1d4ed8;
+  --db-primary-hover: #1e40af;
+  --db-primary-soft: #eff6ff;
+  --db-accent: #0f766e;
+  --db-danger: #c2413d;
+  --db-danger-soft: #fff1f2;
+  --db-danger-border: #fecdd3;
+  --db-success: #047857;
+  --db-success-soft: #ecfdf5;
+  --db-shadow-sm: 0 4px 12px rgba(35, 51, 77, 0.06);
+  --db-shadow-md: 0 10px 28px rgba(35, 51, 77, 0.08);
+  --db-radius-control: 9px;
+  --db-radius-button: 10px;
+  --db-radius-panel: 15px;
+  --db-radius-shell: 18px;
+}
+
+body {
+  color: var(--db-text);
+  background:
+    radial-gradient(circle at 16% 0%, rgba(29, 78, 216, 0.055), transparent 24%),
+    radial-gradient(circle at 86% 6%, rgba(15, 118, 110, 0.045), transparent 26%),
+    linear-gradient(180deg, #fbfcfe 0%, var(--db-bg) 100%);
+}
+
+.hero-card,
+.panel,
+.settings-modal {
+  color: var(--db-text);
+  background: rgba(255, 255, 255, 0.94);
+  border-color: var(--db-border-strong);
+  box-shadow: var(--db-shadow-md);
+  backdrop-filter: blur(14px);
+}
+
+.hero-card {
+  border-radius: var(--db-radius-shell);
+  padding: 12px 14px;
+}
+
+.panel {
+  border-radius: var(--db-radius-panel);
+  padding: 14px;
+}
+
+.brand-row h1,
+.modal-header h2,
+.settings-body h3,
+.update-card h3 {
+  color: var(--db-text-strong);
+}
+
+.brand-row h1 {
+  letter-spacing: -0.045em;
+}
+
+.brand-row p,
+.panel-title,
+label,
+.muted,
+.skeleton,
+.info-row span,
+.planned-box p,
+.update-card p {
+  color: var(--db-text-muted);
+}
+
+.brand-image {
+  filter: drop-shadow(0 8px 12px rgba(15, 118, 110, 0.12));
+}
+
+.status-pill {
+  color: #334155;
+  background: #ffffff;
+  border-color: var(--db-border);
+  box-shadow: var(--db-shadow-sm);
+}
+
+.status-pill.online {
+  color: var(--db-success);
+  background: var(--db-success-soft);
+  border-color: #bbf7d0;
+}
+
+.status-pill.offline {
+  color: var(--db-danger);
+  background: var(--db-danger-soft);
+  border-color: var(--db-danger-border);
+}
+
+.icon-button {
+  color: #334155;
+  background: #ffffff;
+  border-color: var(--db-border-strong);
+  border-radius: 13px;
+  box-shadow: var(--db-shadow-sm);
+}
+
+.command-card,
+.logs-box,
+.skeleton,
+.planned-box,
+.update-card,
+.info-row {
+  color: var(--db-text);
+  background: var(--db-surface-soft);
+  border-color: var(--db-border);
+  box-shadow: none;
+}
+
+.command-card {
+  border-radius: 14px;
+}
+
+.command-card span {
+  color: var(--db-text-muted);
+}
+
+.command-card code,
+code {
+  color: var(--db-accent);
+}
+
+input,
+select {
+  color: var(--db-text-strong);
+  background: var(--db-surface);
+  border-color: var(--db-border);
+  border-radius: var(--db-radius-control);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+input:focus,
+select:focus {
+  border-color: rgba(29, 78, 216, 0.62);
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.10);
+}
+
+button,
+.link-button {
+  color: #334155;
+  background: var(--db-surface-muted);
+  border-color: var(--db-border);
+  border-radius: var(--db-radius-button);
+  box-shadow: none;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+button:hover,
+.link-button:hover,
+.icon-button:hover {
+  background: #e7eef7;
+  border-color: var(--db-border-strong);
+  box-shadow: var(--db-shadow-sm);
+  transform: translateY(-1px);
+}
+
+button.primary,
+.link-button.primary,
+button.start-button {
+  color: #ffffff;
+  background: var(--db-primary);
+  border-color: var(--db-primary);
+  box-shadow: 0 8px 18px rgba(29, 78, 216, 0.16);
+}
+
+button.primary:hover,
+.link-button.primary:hover,
+button.start-button:hover {
+  background: var(--db-primary-hover);
+  border-color: var(--db-primary-hover);
+}
+
+button.secondary,
+button.save-button {
+  color: #1f3b63;
+  background: #f4f7fb;
+  border-color: var(--db-border-strong);
+}
+
+button.quiet,
+button.refresh-button {
+  flex: 0 1 auto;
+  min-width: 96px;
+  color: var(--db-text-muted);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+button.quiet:hover,
+button.refresh-button:hover {
+  color: #334155;
+  background: #eef3f8;
+  border-color: var(--db-border);
+}
+
+button.danger,
+button.stop-button {
+  color: var(--db-danger);
+  background: var(--db-danger-soft);
+  border-color: var(--db-danger-border);
+}
+
+button.danger:disabled,
+button.stop-button:disabled {
+  color: #94a3b8;
+  background: #f3f6fa;
+  border-color: #e2e8f0;
+}
+
+button:disabled {
+  opacity: 0.56;
+  box-shadow: none;
+}
+
+.button-row {
+  align-items: center;
+}
+
+.button-row button.start-button {
+  flex: 1 1 156px;
+}
+
+.button-row button.stop-button,
+.button-row button.save-button {
+  flex: 1 1 122px;
+}
+
+.button-row button.refresh-button {
+  flex: 0 1 104px;
+}
+
+.tabs {
+  background: #eef3f8;
+  border-radius: 13px;
+}
+
+.tabs button {
+  border-radius: 9px;
+}
+
+.tabs button.active {
+  color: var(--db-primary);
+  background: #ffffff;
+  border-color: #ffffff;
+  box-shadow: var(--db-shadow-sm);
+}
+
+.keyboard-scope-note {
+  color: #1f3b63;
+  background: #f8fafc;
+  border-color: var(--db-border);
+  border-radius: 13px;
+}
+
+.keyboard-scope-note strong {
+  color: var(--db-text-strong);
+}
+
+.keyboard-scope-note span {
+  color: var(--db-text-muted);
+}
+
+.keyboard-scope-note.client-role {
+  color: #9f1239;
+  background: var(--db-danger-soft);
+  border-color: var(--db-danger-border);
+}
+
+.save-feedback {
+  color: var(--db-text-muted);
+  background: #eef3f8;
+}
+
+.save-feedback.saving {
+  color: var(--db-primary);
+  background: var(--db-primary-soft);
+}
+
+.save-feedback.saved {
+  color: var(--db-success);
+  background: var(--db-success-soft);
+}
+
+.save-feedback.error {
+  color: var(--db-danger);
+  background: var(--db-danger-soft);
+}
+
+.error-banner {
+  color: #9f1239;
+  background: var(--db-danger-soft);
+  border-color: var(--db-danger-border);
+  border-radius: 12px;
+}
+
+.logs-box {
+  border-radius: 13px;
+}
+
+.settings-modal {
+  border-radius: 18px;
+}
+
+@media (max-width: 760px) {
+  .button-row button.refresh-button {
+    flex: 1 1 112px;
+  }
+}
+
+/* 1.6.1 two-column height balance. Keep the 1.5.12 edge-fit and resize behavior intact. */
+.grid-layout {
+  align-items: stretch;
+}
+
+.grid-layout > .panel:not(.logs-panel) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.connection-panel .form-grid,
+.runtime-panel .button-row {
+  flex: 1 1 auto;
+}
+
+.runtime-panel .command-card {
+  flex: 0 0 auto;
+}
+
+.runtime-panel .button-row {
+  align-content: end;
+}
+
+@media (max-width: 460px) {
+  .hero-card,
+  .panel {
+    border-radius: 14px;
+  }
+}
+
+/* 1.6.3 single-column correction.
+   Keep desktop two-column cards visually balanced, but let stacked panels shrink to content height.
+   Also make every form control span the full card width once the layout becomes a single column. */
+@media (min-width: 761px) {
+  .grid-layout {
+    align-items: stretch;
+  }
+
+  .grid-layout > .panel:not(.logs-panel) {
+    height: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .grid-layout {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: start;
+    grid-auto-rows: auto;
+  }
+
+  .grid-layout > .panel:not(.logs-panel),
+  .connection-panel,
+  .runtime-panel {
+    display: block;
+    height: auto;
+    min-height: 0;
+  }
+
+  .connection-panel .form-grid,
+  .runtime-panel .button-row {
+    flex: initial;
+  }
+
+  .form-grid,
+  .form-grid.compact,
+  .key-map-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .form-grid > *,
+  .form-grid label,
+  .form-grid .wide,
+  label.wide {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  input,
+  select,
+  textarea,
+  .form-grid input,
+  .form-grid select {
+    width: 100%;
+    max-width: none;
+  }
+
+  .panel {
+    align-self: start;
+  }
+}
+
+/* 1.6.4 stacked layout flow fix.
+   Single-column mode must keep the panels in normal document flow: compact gaps,
+   no vertical stretching, and no overlap between Runtime and Logs. */
+@media (max-width: 760px) {
+  .app-shell {
+    gap: 6px;
+  }
+
+  .grid-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: stretch;
+    overflow: visible;
+  }
+
+  .grid-layout > .panel,
+  .grid-layout > .panel:not(.logs-panel),
+  .connection-panel,
+  .runtime-panel,
+  .logs-panel {
+    position: static;
+    display: block;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    margin: 0;
+    align-self: stretch;
+    overflow: visible;
+  }
+
+  .connection-panel {
+    margin-bottom: 0;
+  }
+
+  .runtime-panel {
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+
+  .runtime-panel .command-card {
+    margin-bottom: 10px;
+  }
+
+  .runtime-panel .button-row {
+    display: flex;
+    flex: none;
+    align-content: start;
+    margin-bottom: 0;
+  }
+
+  .runtime-panel .save-feedback {
+    margin-top: 8px;
+  }
+
+  .logs-panel {
+    clear: both;
+  }
+}

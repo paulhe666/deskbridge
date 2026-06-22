@@ -1,5 +1,5 @@
 #define MyAppName "Deskbridge"
-#define MyAppVersion "1.5.10"
+#define MyAppVersion "1.6.5"
 #define MyAppPublisher "Deskbridge"
 #define MyAppExeName "deskbridge.exe"
 
@@ -25,6 +25,7 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Source: "..\..\target\release\deskbridge.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\assets\deskbridge.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\web\dist\*"; DestDir: "{app}\web\dist"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Deskbridge"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\deskbridge.ico"

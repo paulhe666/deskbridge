@@ -7,6 +7,8 @@ mod control;
 mod file_transfer;
 mod gui;
 mod input;
+#[cfg(target_os = "linux")]
+mod linux;
 mod platform;
 mod pointer;
 mod protocol;

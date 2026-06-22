@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "deskbridge"
-version = "1.5.10"
+version = "1.6.5"
 dependencies = [
  "cc",
  "core-foundation",
