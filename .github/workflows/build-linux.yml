@@ -48,27 +48,27 @@ jobs:
           ls -la source
 
       - name: Install web dependencies
-        working-directory: source/deskbridge-1.1.4/web
+        working-directory: source/web
         run: npm ci
 
       - name: Build web frontend
-        working-directory: source/deskbridge-1.1.4/web
+        working-directory: source/web
         run: npm run build
 
       - name: Test Rust code
-        working-directory: source/deskbridge-1.1.4
+        working-directory: source
         run: cargo test
 
       - name: Build Linux bundles
-        working-directory: source/deskbridge-1.1.4
+        working-directory: source
         run: npx --prefix web tauri build --bundles deb,appimage
 
       - name: Collect Linux artifacts
-        working-directory: source/deskbridge-1.1.4
+        working-directory: source
         run: |
-          mkdir -p ../../dist/linux
-          find target/release/bundle -type f \( -name '*.deb' -o -name '*.AppImage' \) -print -exec cp {} ../../dist/linux/ \;
-          ls -lh ../../dist/linux
+          mkdir -p ../dist/linux
+          find target/release/bundle -type f \( -name '*.deb' -o -name '*.AppImage' \) -print -exec cp {} ../dist/linux/ \;
+          ls -lh ../dist/linux
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
