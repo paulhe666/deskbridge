@@ -15,8 +15,8 @@ use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SCROLL;
 use windows_sys::Win32::UI::Input::{
-    GetRawInputData, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER,
-    RID_INPUT, RIDEV_INPUTSINK, RIM_TYPEMOUSE, RegisterRawInputDevices,
+    GetRawInputBuffer, GetRawInputData, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, RAWINPUT, RAWINPUTDEVICE,
+    RAWINPUTHEADER, RID_INPUT, RIDEV_INPUTSINK, RIM_TYPEMOUSE, RegisterRawInputDevices,
 };
 use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -47,6 +47,7 @@ const DEFAULT_REMOTE_HEIGHT: i32 = 768;
 const WHEEL_PIXELS_PER_DETENT: i32 = 120;
 const DEFAULT_INPUT_FLUSH_MS: u64 = 2;
 const INPUT_BATCH_LIMIT: usize = 64;
+const RAW_INPUT_BUFFER_CAPACITY: usize = 64;
 const DROP_STRIP_WIDTH: i32 = 18;
 const DROP_STRIP_ALPHA: u8 = 48;
 const CURSOR_LOCK_RADIUS: i32 = 24;
@@ -587,6 +588,7 @@ unsafe extern "system" fn raw_input_proc(
     }
     if message == WM_INPUT {
         handle_raw_mouse_input(lparam);
+        drain_buffered_raw_mouse_input();
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     }
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
@@ -608,7 +610,43 @@ fn handle_raw_mouse_input(lparam: LPARAM) {
     if read == u32::MAX || read == 0 {
         return;
     }
+    handle_raw_mouse(&raw);
+}
 
+fn drain_buffered_raw_mouse_input() {
+    let header_size = size_of::<RAWINPUTHEADER>() as u32;
+    let mut raw_inputs = Vec::with_capacity(RAW_INPUT_BUFFER_CAPACITY);
+    for _ in 0..RAW_INPUT_BUFFER_CAPACITY {
+        raw_inputs.push(unsafe { zeroed::<RAWINPUT>() });
+    }
+
+    loop {
+        let mut buffer_size = (raw_inputs.len() * size_of::<RAWINPUT>()) as u32;
+        let count =
+            unsafe { GetRawInputBuffer(raw_inputs.as_mut_ptr(), &mut buffer_size, header_size) };
+        if count == u32::MAX || count == 0 {
+            break;
+        }
+
+        let mut raw_ptr = raw_inputs.as_ptr();
+        for _ in 0..count {
+            let raw = unsafe { &*raw_ptr };
+            if raw.header.dwSize == 0 {
+                break;
+            }
+            handle_raw_mouse(raw);
+            raw_ptr = (raw_ptr as *const u8)
+                .wrapping_add(raw.header.dwSize as usize)
+                .cast::<RAWINPUT>();
+        }
+
+        if count < RAW_INPUT_BUFFER_CAPACITY as u32 {
+            break;
+        }
+    }
+}
+
+fn handle_raw_mouse(raw: &RAWINPUT) {
     if raw.header.dwType != RIM_TYPEMOUSE {
         return;
     }

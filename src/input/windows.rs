@@ -5,9 +5,9 @@ use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
     KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
-    SendInput,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
+    MOUSEEVENTF_XUP, MOUSEINPUT, SendInput,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, SetCursorPos, SetProcessDPIAware,
@@ -109,20 +109,19 @@ impl InputSink {
     }
 
     fn mouse_delta(&mut self, dx: i32, dy: i32) -> std::io::Result<()> {
-        self.mouse_position.0 = self
-            .mouse_position
-            .0
-            .saturating_add(dx)
-            .clamp(0, self.screen_size.0 - 1);
-        self.mouse_position.1 = self
-            .mouse_position
-            .1
-            .saturating_add(dy)
-            .clamp(0, self.screen_size.1 - 1);
-        if unsafe { SetCursorPos(self.mouse_position.0, self.mouse_position.1) } == 0 {
-            return Err(std::io::Error::last_os_error());
+        let old = self.mouse_position;
+        let next = (
+            old.0.saturating_add(dx).clamp(0, self.screen_size.0 - 1),
+            old.1.saturating_add(dy).clamp(0, self.screen_size.1 - 1),
+        );
+        self.mouse_position = next;
+
+        let allowed_dx = next.0.saturating_sub(old.0);
+        let allowed_dy = next.1.saturating_sub(old.1);
+        if allowed_dx == 0 && allowed_dy == 0 {
+            return Ok(());
         }
-        Ok(())
+        send_mouse(MOUSEEVENTF_MOVE, allowed_dx, allowed_dy, 0)
     }
 
     fn mouse_button(&mut self, button: MouseButton, down: bool) -> std::io::Result<()> {

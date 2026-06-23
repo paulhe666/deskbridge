@@ -18,8 +18,8 @@ use crate::transport::SharedWriter;
 const DEFAULT_REMOTE_WIDTH: i32 = 1366;
 const DEFAULT_REMOTE_HEIGHT: i32 = 768;
 const REMOTE_CLIPBOARD_SUPPRESS_WINDOW: Duration = Duration::from_millis(1200);
-const DEFAULT_INPUT_FLUSH_MS: u64 = 4;
-const REMOTE_CURSOR_REPIN_INTERVAL: Duration = Duration::from_millis(16);
+const DEFAULT_INPUT_FLUSH_MS: u64 = 2;
+const DEFAULT_REMOTE_CURSOR_REPIN_MS: u64 = 64;
 const TAP_MOUSE_MOVED: u32 = 1;
 const TAP_MOUSE_LEFT_DOWN: u32 = 2;
 const TAP_MOUSE_LEFT_UP: u32 = 3;
@@ -488,6 +488,18 @@ fn input_flush_interval() -> Duration {
     })
 }
 
+fn remote_cursor_repin_interval() -> Duration {
+    static INTERVAL: OnceLock<Duration> = OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        let ms = std::env::var("DESKBRIDGE_MACOS_REPIN_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_REMOTE_CURSOR_REPIN_MS)
+            .clamp(16, 250);
+        Duration::from_millis(ms)
+    })
+}
+
 fn flush_pending_input(
     writer: &SharedWriter,
     pending_motion: &Arc<Mutex<PendingInput>>,
@@ -616,7 +628,7 @@ impl RemoteCursorLock {
         let anchor = self.anchor?;
         let due = self
             .last_pin
-            .map(|last| last.elapsed() >= REMOTE_CURSOR_REPIN_INTERVAL)
+            .map(|last| last.elapsed() >= remote_cursor_repin_interval())
             .unwrap_or(true);
         if due {
             self.last_pin = Some(Instant::now());
