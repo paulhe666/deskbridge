@@ -1,7 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::protocol::InputEvent;
 
@@ -38,7 +38,10 @@ impl PointerTrace {
                 let mut writer = BufWriter::new(file);
                 if should_write_header {
                     if let Err(e) = writeln!(writer, "t_ms,x,y,dx,dy,event,role,source") {
-                        eprintln!("pointer trace disabled: failed to write {} header: {e}", path.display());
+                        eprintln!(
+                            "pointer trace disabled: failed to write {} header: {e}",
+                            path.display()
+                        );
                         return Self::disabled(role);
                     }
                 }
@@ -54,7 +57,10 @@ impl PointerTrace {
                 }
             }
             Err(e) => {
-                eprintln!("pointer trace disabled: failed to open {}: {e}", path.display());
+                eprintln!(
+                    "pointer trace disabled: failed to open {}: {e}",
+                    path.display()
+                );
                 Self::disabled(role)
             }
         }
@@ -112,6 +118,27 @@ fn trace_path(role: &str) -> Option<PathBuf> {
     std::env::var_os(role_key)
         .or_else(|| std::env::var_os("DESKBRIDGE_POINTER_TRACE"))
         .map(PathBuf::from)
+        .map(|target| run_trace_path(&target, role))
+}
+
+fn run_trace_path(target: &Path, role: &str) -> PathBuf {
+    let stamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let pid = std::process::id();
+
+    if target.extension().and_then(|value| value.to_str()) == Some("csv") {
+        let parent = target.parent().unwrap_or_else(|| Path::new("."));
+        let stem = target
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("deskbridge-pointer");
+        return parent.join(format!("{stem}-{role}-{stamp_ms}-{pid}.csv"));
+    }
+
+    target.join(format!("deskbridge-pointer-{role}-{stamp_ms}-{pid}.csv"))
 }
 
 fn open_trace_file(path: &PathBuf) -> std::io::Result<(File, bool)> {
@@ -120,7 +147,10 @@ fn open_trace_file(path: &PathBuf) -> std::io::Result<(File, bool)> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let should_write_header = !path.exists() || path.metadata().map(|meta| meta.len() == 0).unwrap_or(true);
-    let file = OpenOptions::new().create(true).append(true).open(path)?;
-    Ok((file, should_write_header))
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    Ok((file, true))
 }

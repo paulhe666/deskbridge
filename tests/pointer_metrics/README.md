@@ -43,16 +43,25 @@ dx,dy：相对位移，单位 px
 
 ## 实际连接时采集
 
-GUI 方式：打开 Settings / Developer / Pointer movement trace。打开后可以填写 Trace CSV 路径，例如 `/tmp/deskbridge-pointer.csv`。留空则使用系统临时目录。启动服务后，Deskbridge 会在实际连接时记录鼠标进入和相对位移事件。
+GUI 方式：打开 Settings / Developer / Pointer movement trace。打开后填写 Trace 保存目录，例如 macOS 上的 `/Users/lpj/Desktop`，Windows 上的 `C:\\Users\\你的用户名\\Desktop`。留空则使用系统临时目录。
 
-命令行方式也可以直接设置环境变量：
+启动服务后，Deskbridge 会在目录下自动新建 CSV 文件，不会覆盖旧文件。文件名格式类似：
 
-```bash
-DESKBRIDGE_POINTER_TRACE=/tmp/deskbridge-pointer.csv deskbridge server --bind 0.0.0.0:24920
-DESKBRIDGE_POINTER_TRACE=/tmp/deskbridge-pointer.csv deskbridge client --server 192.168.1.10:24920
+```text
+deskbridge-pointer-server-1791234567890-12345.csv
+deskbridge-pointer-client-1791234567890-12345.csv
 ```
 
-断开连接后用下面的脚本分析。
+命令行方式也可以直接设置环境变量。建议填目录：
+
+```bash
+DESKBRIDGE_POINTER_TRACE=/tmp deskbridge server --bind 0.0.0.0:24920
+DESKBRIDGE_POINTER_TRACE=/tmp deskbridge client --server 192.168.1.10:24920
+```
+
+如果你填的是 `.csv` 文件路径，也不会覆盖原文件。程序会自动在文件名后追加角色、时间戳和进程号，例如 `deskbridge-pointer-server-1791234567890-12345.csv`。
+
+断开连接后用下面的脚本分析。不要直接运行 CSV 文件；要运行 `analyze_pointer_trace.py`，并把 CSV 路径作为参数传进去。
 
 ## 使用方法
 

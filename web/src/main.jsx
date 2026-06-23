@@ -103,9 +103,9 @@ const copy = {
     configPathHint: 'Leave as the shown program-folder path, or enter a custom .ini file path. Non-.ini paths are treated as folders and config.ini will be placed inside.',
     useDefaultConfigPath: 'Use program folder',
     pointerTrace: 'Pointer movement trace',
-    pointerTraceText: 'Record runtime pointer enter/delta events to a CSV file for stutter analysis. Restart the service after changing this option.',
-    pointerTracePath: 'Trace CSV path',
-    pointerTracePathHint: 'Leave empty to use the system temp folder. Analyze the CSV with tests/pointer_metrics/analyze_pointer_trace.py.',
+    pointerTraceText: 'Record runtime pointer enter/delta events to a new CSV file on every service run. Restart the service after changing this option.',
+    pointerTracePath: 'Trace folder',
+    pointerTracePathHint: 'Enter a folder path. Each service run creates a new CSV automatically. If you enter a .csv file path, Deskbridge still adds a timestamp suffix instead of overwriting it.',
   },
   zh: {
     subtitle: '',
@@ -159,9 +159,9 @@ const copy = {
     configPathHint: '可以保持程序目录下的默认路径，也可以输入自定义 .ini 文件路径。非 .ini 路径会被当作目录，并在其中保存 config.ini。',
     useDefaultConfigPath: '使用程序目录',
     pointerTrace: '光标移动监测',
-    pointerTraceText: '把实际连接中的光标进入/位移事件记录为 CSV，用于分析卡顿。修改后需要重启服务生效。',
-    pointerTracePath: 'Trace CSV 路径',
-    pointerTracePathHint: '留空则使用系统临时目录。断开后用 tests/pointer_metrics/analyze_pointer_trace.py 分析 CSV。',
+    pointerTraceText: '把实际连接中的光标进入/位移事件记录为 CSV；每次启动服务都会新建一个文件。修改后需要重启服务生效。',
+    pointerTracePath: 'Trace 保存目录',
+    pointerTracePathHint: '填写上一级文件夹路径即可。每次启动服务会自动生成新的 CSV。如果填写 .csv 文件路径，也会自动追加时间戳，不会覆盖旧文件。',
   },
 };
 
@@ -560,7 +560,7 @@ function SettingsModal({ t, tab, setTab, config, patchConfig, patchAndSave, save
                       {t.pointerTracePath}
                       <input
                         value={config.pointerTracePath || ''}
-                        placeholder="/tmp/deskbridge-pointer.csv"
+                        placeholder="/Users/lpj/Desktop"
                         onChange={(event) => patchConfig({ pointerTracePath: event.target.value })}
                       />
                     </label>

@@ -255,11 +255,7 @@ fn pointer_trace_path(config: &AppConfig) -> String {
     if !trimmed.is_empty() {
         return trimmed.to_string();
     }
-    let file_name = match config.role {
-        Role::Server => "deskbridge-pointer-server.csv",
-        Role::Client => "deskbridge-pointer-client.csv",
-    };
-    std::env::temp_dir().join(file_name).to_string_lossy().to_string()
+    std::env::temp_dir().to_string_lossy().to_string()
 }
 
 fn edge_name(edge: Edge) -> &'static str {
