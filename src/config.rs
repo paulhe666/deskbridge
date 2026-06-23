@@ -64,6 +64,8 @@ pub struct AppConfig {
     pub mac_arrow_up_mapping: KeyTarget,
     pub mac_arrow_down_mapping: KeyTarget,
     pub auto_update_check: bool,
+    pub pointer_trace_enabled: bool,
+    pub pointer_trace_path: String,
 }
 
 impl Default for AppConfig {
@@ -91,6 +93,8 @@ impl Default for AppConfig {
             mac_arrow_up_mapping: KeyTarget::ArrowUp,
             mac_arrow_down_mapping: KeyTarget::ArrowDown,
             auto_update_check: true,
+            pointer_trace_enabled: false,
+            pointer_trace_path: String::new(),
         }
     }
 }
@@ -190,6 +194,10 @@ impl AppConfig {
                 "auto_update_check" => {
                     config.auto_update_check = parse_bool(value, config.auto_update_check)
                 }
+                "pointer_trace_enabled" => {
+                    config.pointer_trace_enabled = parse_bool(value, config.pointer_trace_enabled)
+                }
+                "pointer_trace_path" => config.pointer_trace_path = value.trim().to_string(),
                 _ => {}
             }
         }
@@ -207,7 +215,7 @@ impl AppConfig {
         fs::write(
             path,
             format!(
-                "role={}\nlanguage={}\nlanguage_source=user\nbind={}\nserver={}\nedge={}\nscroll_scale={:.3}\nscroll_response={:.3}\nscroll_max_step={:.1}\nscroll_frame_ms={}\nmac_command_mapping={}\nmac_control_mapping={}\nmac_option_mapping={}\nmac_shift_mapping={}\nmac_caps_lock_mapping={}\nmac_escape_mapping={}\nmac_backspace_mapping={}\nmac_delete_mapping={}\nmac_arrow_left_mapping={}\nmac_arrow_right_mapping={}\nmac_arrow_up_mapping={}\nmac_arrow_down_mapping={}\nauto_update_check={}\n",
+                "role={}\nlanguage={}\nlanguage_source=user\nbind={}\nserver={}\nedge={}\nscroll_scale={:.3}\nscroll_response={:.3}\nscroll_max_step={:.1}\nscroll_frame_ms={}\nmac_command_mapping={}\nmac_control_mapping={}\nmac_option_mapping={}\nmac_shift_mapping={}\nmac_caps_lock_mapping={}\nmac_escape_mapping={}\nmac_backspace_mapping={}\nmac_delete_mapping={}\nmac_arrow_left_mapping={}\nmac_arrow_right_mapping={}\nmac_arrow_up_mapping={}\nmac_arrow_down_mapping={}\nauto_update_check={}\npointer_trace_enabled={}\npointer_trace_path={}\n",
                 match self.role {
                     Role::Server => "server",
                     Role::Client => "client",
@@ -236,6 +244,8 @@ impl AppConfig {
                 self.mac_arrow_up_mapping.as_str(),
                 self.mac_arrow_down_mapping.as_str(),
                 self.auto_update_check,
+                self.pointer_trace_enabled,
+                self.pointer_trace_path,
             ),
         )
     }

@@ -195,6 +195,8 @@ struct ConfigView {
     mac_arrow_up_mapping: String,
     mac_arrow_down_mapping: String,
     auto_update_check: bool,
+    pointer_trace_enabled: bool,
+    pointer_trace_path: String,
     config_path: String,
 }
 
@@ -294,6 +296,8 @@ impl ConfigView {
             mac_arrow_up_mapping: config.mac_arrow_up_mapping.as_str().to_string(),
             mac_arrow_down_mapping: config.mac_arrow_down_mapping.as_str().to_string(),
             auto_update_check: config.auto_update_check,
+            pointer_trace_enabled: config.pointer_trace_enabled,
+            pointer_trace_path: config.pointer_trace_path.clone(),
             config_path: config::config_path().to_string_lossy().to_string(),
         }
     }
@@ -337,5 +341,7 @@ impl ConfigView {
         config.mac_arrow_down_mapping =
             KeyTarget::parse(&self.mac_arrow_down_mapping).unwrap_or(config.mac_arrow_down_mapping);
         config.auto_update_check = self.auto_update_check;
+        config.pointer_trace_enabled = self.pointer_trace_enabled;
+        config.pointer_trace_path = self.pointer_trace_path.trim().to_string();
     }
 }

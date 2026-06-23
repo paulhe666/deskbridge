@@ -515,6 +515,7 @@ struct InputSendLog {
     enabled: bool,
     count: u64,
     last_print: Instant,
+    pointer_trace: Option<crate::pointer_trace::PointerTrace>,
 }
 
 impl Default for InputSendLog {
@@ -523,6 +524,7 @@ impl Default for InputSendLog {
             enabled: false,
             count: 0,
             last_print: Instant::now() - Duration::from_secs(2),
+            pointer_trace: None,
         }
     }
 }
@@ -531,12 +533,16 @@ impl InputSendLog {
     fn new() -> Self {
         Self {
             enabled: std::env::var_os("DESKBRIDGE_INPUT_LOG").is_some(),
+            pointer_trace: Some(crate::pointer_trace::PointerTrace::from_env("server")),
             ..Self::default()
         }
     }
 }
 
 fn write_input_event(writer: &SharedWriter, event: InputEvent, log: &mut InputSendLog) {
+    if let Some(trace) = log.pointer_trace.as_mut() {
+        trace.observe(&event, "send");
+    }
     let encoded = protocol::encode_input(&event);
     if let Err(e) = writer.write_input(Frame::new(FrameKind::Input, encoded)) {
         eprintln!("input send failed after {} sent event(s): {e}", log.count);

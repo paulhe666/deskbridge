@@ -154,7 +154,7 @@ struct ServiceLaunch {
 
 impl ServiceLaunch {
     fn from_config(config: &AppConfig) -> Self {
-        match config.role {
+        let mut launch = match config.role {
             Role::Server => Self {
                 args: vec![
                     "server".into(),
@@ -235,12 +235,31 @@ impl ServiceLaunch {
                     ),
                 ],
             },
+        };
+        if config.pointer_trace_enabled {
+            launch.env.push((
+                "DESKBRIDGE_POINTER_TRACE".into(),
+                pointer_trace_path(config),
+            ));
         }
+        launch
     }
 
     fn preview(&self) -> String {
         format!("deskbridge {}", self.args.join(" "))
     }
+}
+
+fn pointer_trace_path(config: &AppConfig) -> String {
+    let trimmed = config.pointer_trace_path.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    let file_name = match config.role {
+        Role::Server => "deskbridge-pointer-server.csv",
+        Role::Client => "deskbridge-pointer-client.csv",
+    };
+    std::env::temp_dir().join(file_name).to_string_lossy().to_string()
 }
 
 fn edge_name(edge: Edge) -> &'static str {

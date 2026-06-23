@@ -2,7 +2,7 @@
 
 这个目录用于离线评估 Deskbridge 光标移动是否卡顿、跳变或输出节奏不均匀。
 
-它不依赖 GUI，也不依赖平台 API。只要把服务端采集到的鼠标事件、客户端注入前后的光标轨迹，保存成 CSV，就可以用同一套指标比较 macOS / Windows / Linux 的效果。
+它不依赖平台 API。你可以手动提供 CSV，也可以在 GUI 的 Settings / Developer 里打开 Pointer movement trace，让实际连接过程自动记录 CSV，再用同一套指标比较 macOS / Windows / Linux 的效果。
 
 ## 文件
 
@@ -40,6 +40,19 @@ dx,dy：相对位移，单位 px
 ```
 
 如果同时存在 `x,y` 和 `dx,dy`，脚本优先使用 `x,y`。
+
+## 实际连接时采集
+
+GUI 方式：打开 Settings / Developer / Pointer movement trace。打开后可以填写 Trace CSV 路径，例如 `/tmp/deskbridge-pointer.csv`。留空则使用系统临时目录。启动服务后，Deskbridge 会在实际连接时记录鼠标进入和相对位移事件。
+
+命令行方式也可以直接设置环境变量：
+
+```bash
+DESKBRIDGE_POINTER_TRACE=/tmp/deskbridge-pointer.csv deskbridge server --bind 0.0.0.0:24920
+DESKBRIDGE_POINTER_TRACE=/tmp/deskbridge-pointer.csv deskbridge client --server 192.168.1.10:24920
+```
+
+断开连接后用下面的脚本分析。
 
 ## 使用方法
 

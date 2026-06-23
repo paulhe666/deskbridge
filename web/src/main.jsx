@@ -83,6 +83,7 @@ const copy = {
     settings: 'Settings',
     general: 'General',
     keyboard: 'Keyboard Mapping',
+    developer: 'Developer',
     about: 'About / Update',
     activeMappings: 'Active mappings',
     modifierMappings: 'Modifier keys',
@@ -101,6 +102,10 @@ const copy = {
     configPath: 'Config file path',
     configPathHint: 'Leave as the shown program-folder path, or enter a custom .ini file path. Non-.ini paths are treated as folders and config.ini will be placed inside.',
     useDefaultConfigPath: 'Use program folder',
+    pointerTrace: 'Pointer movement trace',
+    pointerTraceText: 'Record runtime pointer enter/delta events to a CSV file for stutter analysis. Restart the service after changing this option.',
+    pointerTracePath: 'Trace CSV path',
+    pointerTracePathHint: 'Leave empty to use the system temp folder. Analyze the CSV with tests/pointer_metrics/analyze_pointer_trace.py.',
   },
   zh: {
     subtitle: '',
@@ -134,6 +139,7 @@ const copy = {
     settings: '设置',
     general: '通用',
     keyboard: '键盘映射',
+    developer: '开发者',
     about: '关于 / 更新',
     activeMappings: '当前生效映射',
     modifierMappings: '修饰键',
@@ -152,6 +158,10 @@ const copy = {
     configPath: '配置文件路径',
     configPathHint: '可以保持程序目录下的默认路径，也可以输入自定义 .ini 文件路径。非 .ini 路径会被当作目录，并在其中保存 config.ini。',
     useDefaultConfigPath: '使用程序目录',
+    pointerTrace: '光标移动监测',
+    pointerTraceText: '把实际连接中的光标进入/位移事件记录为 CSV，用于分析卡顿。修改后需要重启服务生效。',
+    pointerTracePath: 'Trace CSV 路径',
+    pointerTracePathHint: '留空则使用系统临时目录。断开后用 tests/pointer_metrics/analyze_pointer_trace.py 分析 CSV。',
   },
 };
 
@@ -459,6 +469,9 @@ function SettingsModal({ t, tab, setTab, config, patchConfig, patchAndSave, save
           <button className={tab === 'keyboard' ? 'active' : ''} onClick={() => setTab('keyboard')}>
             <Keyboard size={16} /> {t.keyboard}
           </button>
+          <button className={tab === 'developer' ? 'active' : ''} onClick={() => setTab('developer')}>
+            <TerminalSquare size={16} /> {t.developer}
+          </button>
           <button className={tab === 'about' ? 'active' : ''} onClick={() => setTab('about')}>
             <Info size={16} /> {t.about}
           </button>
@@ -524,6 +537,43 @@ function SettingsModal({ t, tab, setTab, config, patchConfig, patchAndSave, save
                 <Save size={16} /> {saveNotice === 'saving' ? t.saving : t.save}
               </button>
               {saveNotice && <span className={`save-feedback ${saveNotice}`}>{formatSaveNotice(t, saveNotice)}</span>}
+            </div>
+          </div>
+        ) : tab === 'developer' ? (
+          <div className="settings-body developer-grid">
+            <div className="update-card soft developer-card">
+              <TerminalSquare size={18} />
+              <div>
+                <h3>{t.pointerTrace}</h3>
+                <p>{t.pointerTraceText}</p>
+                {config && (
+                  <>
+                    <label className="check-row">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(config.pointerTraceEnabled)}
+                        onChange={(event) => patchAndSave({ pointerTraceEnabled: event.target.checked })}
+                      />
+                      {t.pointerTrace}
+                    </label>
+                    <label className="wide config-path-field trace-path-field">
+                      {t.pointerTracePath}
+                      <input
+                        value={config.pointerTracePath || ''}
+                        placeholder="/tmp/deskbridge-pointer.csv"
+                        onChange={(event) => patchConfig({ pointerTracePath: event.target.value })}
+                      />
+                    </label>
+                    <p className="settings-hint">{t.pointerTracePathHint}</p>
+                    <div className="save-line">
+                      <button className="primary" onClick={() => save()} disabled={saveNotice === 'saving'}>
+                        <Save size={16} /> {saveNotice === 'saving' ? t.saving : t.save}
+                      </button>
+                      {saveNotice && <span className={`save-feedback ${saveNotice}`}>{formatSaveNotice(t, saveNotice)}</span>}
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         ) : (

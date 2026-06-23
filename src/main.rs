@@ -11,6 +11,7 @@ mod input;
 mod linux;
 mod platform;
 mod pointer;
+mod pointer_trace;
 mod protocol;
 mod server;
 mod shutdown;

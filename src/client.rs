@@ -71,6 +71,7 @@ pub fn run(server: &str) -> std::io::Result<()> {
     let receive_root = std::env::temp_dir().join("deskbridge-received");
     let mut incoming_files = file_transfer::IncomingBundle::new(receive_root);
     let mut input_log = InputLog::new();
+    let mut pointer_trace = crate::pointer_trace::PointerTrace::from_env("client");
 
     loop {
         let frame = match protocol::read_frame(&mut stream) {
@@ -82,6 +83,7 @@ pub fn run(server: &str) -> std::io::Result<()> {
             FrameKind::Input => {
                 let event = protocol::decode_input(&frame.payload)?;
                 input_log.observe(&event);
+                pointer_trace.observe(&event, "receive");
                 input.send(event);
             }
             FrameKind::Clipboard => {
