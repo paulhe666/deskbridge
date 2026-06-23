@@ -39,7 +39,7 @@ x,y：绝对坐标，单位 px
 dx,dy：相对位移，单位 px
 ```
 
-如果同时存在 `x,y` 和 `dx,dy`，脚本优先使用 `x,y`。
+如果同时存在 `x,y` 和 `dx,dy`，脚本优先使用 `x,y`。如果某些行因为程序被强制关闭、手工编辑或旧版本记录导致 `x/y` 缺失，脚本会尝试回退到 `dx/dy`；如果仍然不能解析，会跳过该行，并在结果里的 `skipped_row_count` 显示跳过数量。
 
 ## 实际连接时采集
 
@@ -86,7 +86,8 @@ python3 tests/pointer_metrics/analyze_pointer_trace.py tests/pointer_metrics/sam
 ## 主要指标
 
 ```text
-sample_count：采样点数量
+sample_count：有效采样点数量
+skipped_row_count：被跳过的异常行数量，正常应为 0；少量非 0 通常表示 CSV 中有个别坏行
 duration_ms：总时长
 mean_interval_ms：平均事件间隔
 p95_interval_ms：95 分位事件间隔

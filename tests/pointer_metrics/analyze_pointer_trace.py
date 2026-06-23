@@ -30,8 +30,16 @@ class Point:
 
 
 @dataclass(frozen=True)
+class TraceData:
+    points: list[Point]
+    skipped_row_count: int
+    skipped_row_examples: list[str]
+
+
+@dataclass(frozen=True)
 class Metrics:
     sample_count: int
+    skipped_row_count: int
     duration_ms: float
     mean_interval_ms: float
     p50_interval_ms: float
@@ -84,7 +92,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def read_trace(path: Path) -> list[Point]:
+def read_trace(path: Path) -> TraceData:
     if not path.exists():
         raise FileNotFoundError(f"trace file not found: {path}")
 
@@ -100,23 +108,39 @@ def read_trace(path: Path) -> list[Point]:
             raise ValueError("CSV must contain t_ms,x,y or t_ms,dx,dy columns")
 
         points: list[Point] = []
+        skipped_rows = 0
+        skipped_examples: list[str] = []
         current_x = 0.0
         current_y = 0.0
         for line_number, row in enumerate(reader, start=2):
             try:
                 t_ms = float(required(row, "t_ms"))
-                if has_absolute:
+                if has_absolute and present(row, "x") and present(row, "y"):
                     current_x = float(required(row, "x"))
                     current_y = float(required(row, "y"))
-                else:
+                elif has_delta and present(row, "dx") and present(row, "dy"):
                     current_x += float(required(row, "dx"))
                     current_y += float(required(row, "dy"))
+                else:
+                    raise ValueError("missing x/y and dx/dy")
             except ValueError as exc:
-                raise ValueError(f"invalid numeric value at line {line_number}: {exc}") from exc
+                skipped_rows += 1
+                if len(skipped_examples) < 5:
+                    skipped_examples.append(f"line {line_number}: {exc}")
+                continue
             points.append(Point(t_ms=t_ms, x=current_x, y=current_y))
 
     validate_trace(points)
-    return points
+    return TraceData(
+        points=points,
+        skipped_row_count=skipped_rows,
+        skipped_row_examples=skipped_examples,
+    )
+
+
+def present(row: dict[str, str | None], key: str) -> bool:
+    value = row.get(key)
+    return value is not None and value.strip() != ""
 
 
 def required(row: dict[str, str | None], key: str) -> str:
@@ -192,6 +216,7 @@ def analyze(
     points: Sequence[Point],
     stutter_threshold_ms: float,
     acceleration_spike_threshold_px_s2: float,
+    skipped_row_count: int = 0,
 ) -> Metrics:
     interval_ms = intervals(points)
     step_px = distances(points)
@@ -222,6 +247,7 @@ def analyze(
 
     return Metrics(
         sample_count=len(points),
+        skipped_row_count=skipped_row_count,
         duration_ms=points[-1].t_ms - points[0].t_ms,
         mean_interval_ms=sum(interval_ms) / len(interval_ms),
         p50_interval_ms=percentile(interval_ms, 50.0),
@@ -255,7 +281,8 @@ def format_float(value: float) -> str:
 
 def print_report(metrics: Metrics) -> None:
     rows: Iterable[tuple[str, float | int, str]] = [
-        ("sample_count", metrics.sample_count, "points"),
+        ("sample_count", metrics.sample_count, "valid points"),
+        ("skipped_row_count", metrics.skipped_row_count, "invalid rows skipped"),
         ("duration_ms", metrics.duration_ms, "ms"),
         ("mean_interval_ms", metrics.mean_interval_ms, "ms"),
         ("p50_interval_ms", metrics.p50_interval_ms, "ms"),
@@ -297,11 +324,12 @@ def print_report(metrics: Metrics) -> None:
 def main() -> int:
     args = parse_args()
     try:
-        points = read_trace(args.csv_path)
+        trace = read_trace(args.csv_path)
         metrics = analyze(
-            points,
+            trace.points,
             stutter_threshold_ms=args.stutter_threshold_ms,
             acceleration_spike_threshold_px_s2=args.acceleration_spike_threshold,
+            skipped_row_count=trace.skipped_row_count,
         )
     except Exception as exc:  # noqa: BLE001 - command line tool should print concise errors.
         print(f"error: {exc}", file=sys.stderr)
