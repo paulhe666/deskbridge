@@ -1,5 +1,6 @@
 use std::env;
 use std::ffi::OsStr;
+use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -145,6 +146,17 @@ pub fn other(message: impl Into<String>) -> io::Error {
     io::Error::new(ErrorKind::Other, message.into())
 }
 
+pub fn is_wsl() -> bool {
+    env::var_os("WSL_DISTRO_NAME").is_some()
+        || env::var_os("WSL_INTEROP").is_some()
+        || proc_text_contains("/proc/sys/kernel/osrelease", &["microsoft", "wsl"])
+        || proc_text_contains("/proc/version", &["microsoft", "wsl"])
+}
+
+pub fn allow_wsl_input_override() -> bool {
+    env_flag_enabled("DESKBRIDGE_ALLOW_WSL_UINPUT")
+}
+
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -156,6 +168,15 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(path: &Path) -> bool {
     path.is_file()
+}
+
+fn proc_text_contains(path: &str, needles: &[&str]) -> bool {
+    fs::read_to_string(path)
+        .map(|text| {
+            let text = text.to_ascii_lowercase();
+            needles.iter().any(|needle| text.contains(needle))
+        })
+        .unwrap_or(false)
 }
 
 fn matches_env(key: &str, expected: &str) -> bool {

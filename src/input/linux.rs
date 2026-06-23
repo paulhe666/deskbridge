@@ -96,6 +96,16 @@ pub struct InputSink {
 impl InputSink {
     pub fn new(_profile: ConnectionProfile) -> io::Result<Self> {
         let display = DisplayServer::detect();
+        if linux::is_wsl() && !linux::allow_wsl_input_override() {
+            return Err(linux::unsupported(
+                "WSL/WSLg does not route Linux /dev/uinput events into the visible desktop cursor, so Deskbridge Linux client input injection will connect but cannot move the pointer. Use a real Linux desktop/VM, or set DESKBRIDGE_ALLOW_WSL_UINPUT=1 only for experimental testing.",
+            ));
+        }
+        if linux::is_wsl() {
+            eprintln!(
+                "warning: running native-uinput in WSL/WSLg by explicit override; pointer movement may not be visible"
+            );
+        }
         let screen_size = detect_screen_size(display);
         let backend = NativeUinput::new(screen_size).map_err(|error| {
             if matches!(error.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound) {
@@ -651,7 +661,7 @@ fn parse_xdpyinfo_dimensions(text: &str) -> Option<(u32, u32)> {
 }
 
 fn parse_wlr_randr(text: &str) -> Option<(u32, u32)> {
-    let mut max_size = None;
+    let mut max_size: Option<(u32, u32)> = None;
     for line in text.lines() {
         if !line.contains("current") && !line.contains("preferred") {
             continue;

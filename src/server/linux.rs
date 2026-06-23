@@ -90,11 +90,21 @@ pub fn run(config: ServerConfig) -> std::io::Result<()> {
         "linux server backend active ({display}); clipboard sync and evdev input capture are enabled",
         display = display.as_str()
     );
+    if linux::is_wsl() {
+        eprintln!(
+            "warning: WSL/WSLg is not a reliable Linux server target: /dev/input/event* capture is usually unavailable, and LAN clients need Windows portproxy/firewall rules to reach this service"
+        );
+    }
 
-    let listener = TcpListener::bind(&config.bind)?;
+    let listener = TcpListener::bind(&config.bind).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to listen on {}: {error}", config.bind),
+        )
+    })?;
     eprintln!("deskbridge linux server listening on {}", config.bind);
 
-    let (mut stream, addr, writer, remote_size, client_platform) = loop {
+    let (stream, addr, writer, remote_size, client_platform) = loop {
         let (mut stream, addr) = listener.accept()?;
         stream.set_nodelay(true)?;
         eprintln!("client connected from {addr}");

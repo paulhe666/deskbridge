@@ -53,14 +53,23 @@ pub fn run(server: &str) -> std::io::Result<()> {
         protocol::hello_payload_with_screen(width, height),
     ))?;
 
+    let clipboard_state = Arc::new(Mutex::new(ClipboardSyncState::default()));
     eprintln!("initializing local clipboard");
-    let mut clipboard = Clipboard::new()?;
+    let mut clipboard = match Clipboard::new() {
+        Ok(clipboard) => {
+            spawn_clipboard_watcher(writer.clone(), Arc::clone(&clipboard_state));
+            Some(clipboard)
+        }
+        Err(e) => {
+            eprintln!("clipboard disabled: {e}");
+            eprintln!("input sharing will continue without clipboard sync");
+            None
+        }
+    };
 
     eprintln!("client ready (protocol v{})", protocol::VERSION);
     let receive_root = std::env::temp_dir().join("deskbridge-received");
     let mut incoming_files = file_transfer::IncomingBundle::new(receive_root);
-    let clipboard_state = Arc::new(Mutex::new(ClipboardSyncState::default()));
-    spawn_clipboard_watcher(writer.clone(), Arc::clone(&clipboard_state));
     let mut input_log = InputLog::new();
 
     loop {
@@ -78,10 +87,14 @@ pub fn run(server: &str) -> std::io::Result<()> {
             FrameKind::Clipboard => {
                 let payload = protocol::decode_clipboard(&frame.payload)?;
                 eprintln!("received clipboard {}", clipboard_summary(&payload));
-                if let Err(e) = clipboard.write(&payload) {
-                    eprintln!("clipboard write failed: {e}");
+                if let Some(clipboard) = clipboard.as_mut() {
+                    if let Err(e) = clipboard.write(&payload) {
+                        eprintln!("clipboard write failed: {e}");
+                    } else {
+                        note_remote_clipboard(&clipboard_state, &payload);
+                    }
                 } else {
-                    note_remote_clipboard(&clipboard_state, &payload);
+                    eprintln!("clipboard write skipped because local clipboard is disabled");
                 }
             }
             FrameKind::FileStart => {
@@ -95,10 +108,14 @@ pub fn run(server: &str) -> std::io::Result<()> {
                 let files = incoming_files.finish();
                 let payload = ClipboardPayload::Files(files);
                 eprintln!("received clipboard {}", clipboard_summary(&payload));
-                if let Err(e) = clipboard.write(&payload) {
-                    eprintln!("file clipboard write failed: {e}");
+                if let Some(clipboard) = clipboard.as_mut() {
+                    if let Err(e) = clipboard.write(&payload) {
+                        eprintln!("file clipboard write failed: {e}");
+                    } else {
+                        note_remote_clipboard(&clipboard_state, &payload);
+                    }
                 } else {
-                    note_remote_clipboard(&clipboard_state, &payload);
+                    eprintln!("file clipboard write skipped because local clipboard is disabled");
                 }
             }
             _ => {}

@@ -1727,3 +1727,36 @@ button:disabled {
     clear: both;
   }
 }
+
+/* Windows WebView2 wide two-column correction.
+   Keep Runtime actions using the full card width instead of leaving a large empty area on the right. */
+@media (min-width: 761px) {
+  .runtime-panel {
+    min-width: 0;
+  }
+
+  .runtime-panel .command-card {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .runtime-panel .command-card code {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .runtime-panel .button-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    flex: 0 0 auto;
+    width: 100%;
+  }
+
+  .runtime-panel .button-row button {
+    width: 100%;
+    min-width: 0;
+  }
+}

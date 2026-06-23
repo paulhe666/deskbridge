@@ -222,6 +222,10 @@ fn release_mouse_button(button: MouseButton) -> std::io::Result<()> {
 }
 
 fn send_key(scancode: u16, key_up: bool) -> std::io::Result<()> {
+    if let Some(vk) = windows_modifier_vk(scancode) {
+        return send_virtual_key(vk, true, key_up);
+    }
+
     let (scan, extended) = decode_scancode(scancode);
     let mut flags = KEYEVENTF_SCANCODE;
     if extended {
@@ -237,6 +241,37 @@ fn send_key(scancode: u16, key_up: bool) -> std::io::Result<()> {
             ki: KEYBDINPUT {
                 wVk: 0,
                 wScan: scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    })
+}
+
+fn windows_modifier_vk(scancode: u16) -> Option<u16> {
+    match scancode {
+        347 => Some(0x5B), // VK_LWIN
+        348 => Some(0x5C), // VK_RWIN
+        _ => None,
+    }
+}
+
+fn send_virtual_key(vk: u16, extended: bool, key_up: bool) -> std::io::Result<()> {
+    let mut flags = 0;
+    if extended {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    if key_up {
+        flags |= KEYEVENTF_KEYUP;
+    }
+
+    send_input(INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
                 dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
