@@ -1781,10 +1781,9 @@ button:disabled {
 }
 
 /* Responsive log height.
-   Only Logs may absorb window-height changes. Connection and Runtime keep their
-   content height in both desktop two-column and stacked single-column layouts;
-   when the app becomes shorter than the minimum log height, the outer shell clips
-   the bottom instead of compressing form controls out of their cards. */
+   Only Logs may absorb normal window-height changes. Connection and Runtime keep
+   their content height. The page itself remains scrollable so Windows WebView2
+   users can still reach controls when the window is too short. */
 :root {
   --db-logs-min-height: 140px;
 }
@@ -1792,23 +1791,23 @@ button:disabled {
 html,
 body,
 #root {
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .app-shell {
   display: grid;
-  height: 100vh;
-  min-height: 0;
-  overflow: hidden;
+  min-height: 100vh;
+  height: auto;
+  overflow: visible;
   grid-template-rows: auto minmax(0, 1fr);
 }
 
 .grid-layout {
   width: 100%;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .logs-panel {
@@ -1851,7 +1850,7 @@ body,
     flex: 1 1 auto;
     flex-direction: column;
     min-height: 0;
-    overflow: hidden;
+    overflow: visible;
   }
 
   .grid-layout > .panel:not(.logs-panel),
