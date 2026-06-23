@@ -1729,8 +1729,27 @@ button:disabled {
 }
 
 /* Windows WebView2 wide two-column correction.
-   Keep Runtime actions using the full card width instead of leaving a large empty area on the right. */
+   Keep the top Connection/Runtime row filling the full window width and keep
+   Runtime actions using the full card width instead of leaving a large empty area on the right. */
 @media (min-width: 761px) {
+  .grid-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    justify-content: stretch;
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .grid-layout > .connection-panel,
+  .grid-layout > .runtime-panel {
+    width: 100%;
+    max-width: none;
+    align-self: stretch;
+  }
+
+  .logs-panel {
+    grid-column: 1 / -1;
+  }
+
   .runtime-panel {
     min-width: 0;
   }
