@@ -1781,8 +1781,10 @@ button:disabled {
 }
 
 /* Responsive log height.
-   The log box grows with the window height in both desktop two-column and stacked single-column layouts.
-   Once the window is shorter than the minimum log height, the outer app clips the bottom instead of shrinking logs. */
+   Only Logs may absorb window-height changes. Connection and Runtime keep their
+   content height in both desktop two-column and stacked single-column layouts;
+   when the app becomes shorter than the minimum log height, the outer shell clips
+   the bottom instead of compressing form controls out of their cards. */
 :root {
   --db-logs-min-height: 140px;
 }
@@ -1796,6 +1798,7 @@ body,
 }
 
 .app-shell {
+  display: grid;
   height: 100vh;
   min-height: 0;
   overflow: hidden;
@@ -1803,6 +1806,7 @@ body,
 }
 
 .grid-layout {
+  width: 100%;
   min-height: 0;
   overflow: hidden;
 }
@@ -1827,7 +1831,13 @@ body,
 
 @media (min-width: 761px) {
   .grid-layout {
+    display: grid;
     grid-template-rows: auto minmax(var(--db-logs-min-height), 1fr);
+  }
+
+  .grid-layout > .panel:not(.logs-panel) {
+    min-height: max-content;
+    overflow: visible;
   }
 
   .logs-panel {
@@ -1837,11 +1847,32 @@ body,
 
 @media (max-width: 760px) {
   .grid-layout {
+    display: flex;
     flex: 1 1 auto;
+    flex-direction: column;
     min-height: 0;
+    overflow: hidden;
+  }
+
+  .grid-layout > .panel:not(.logs-panel),
+  .connection-panel,
+  .runtime-panel {
+    display: block;
+    flex: 0 0 auto;
+    height: auto;
+    min-height: max-content;
+    overflow: visible;
+  }
+
+  .connection-panel .form-grid,
+  .runtime-panel .button-row {
+    flex: none;
+    min-height: 0;
+    overflow: visible;
   }
 
   .logs-panel {
     flex: 1 0 auto;
+    min-height: var(--db-logs-min-height);
   }
 }
