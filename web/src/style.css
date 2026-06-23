@@ -1779,3 +1779,69 @@ button:disabled {
     min-width: 0;
   }
 }
+
+/* Responsive log height.
+   The log box grows with the window height in both desktop two-column and stacked single-column layouts.
+   Once the window is shorter than the minimum log height, the outer app clips the bottom instead of shrinking logs. */
+:root {
+  --db-logs-min-height: 140px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.grid-layout {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.logs-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.logs-panel header {
+  flex: 0 0 auto;
+}
+
+.logs-box {
+  flex: 1 1 auto;
+  min-height: var(--db-logs-min-height);
+  max-height: none;
+  overflow: auto;
+}
+
+@media (min-width: 761px) {
+  .grid-layout {
+    grid-template-rows: auto minmax(var(--db-logs-min-height), 1fr);
+  }
+
+  .logs-panel {
+    height: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .grid-layout {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .logs-panel {
+    flex: 1 0 auto;
+  }
+}
